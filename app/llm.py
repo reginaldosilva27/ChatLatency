@@ -157,11 +157,7 @@ class LLM:
             )
 
     def model_for(self, tier: Tier) -> str:
-        return {
-            "nano": self.s.nano_model,
-            "mini": self.s.mini_model,
-            "frontier": self.s.frontier_model,
-        }[tier]
+        return self.s.tier_model(tier)
 
     # ---------- shim de parametros ----------
 
@@ -423,7 +419,9 @@ class LLM:
             await asyncio.sleep(0.045)
             return _cheap_hash_vector(text)
 
-        resp = await self._client.embeddings.create(model=self.s.embedding_model, input=text)
+        resp = await self._client.embeddings.create(
+            model=self.s.embedding_model_effective, input=text
+        )
         return resp.data[0].embedding
 
 

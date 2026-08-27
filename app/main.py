@@ -80,10 +80,10 @@ def _price_health(settings: Any) -> dict[str, Any]:
     """
     book = get_price_book(settings)
     tiers = {
-        "nano": settings.nano_model,
-        "mini": settings.mini_model,
-        "frontier": settings.frontier_model,
-        "embedding": settings.embedding_model,
+        "nano": settings.tier_model("nano"),
+        "mini": settings.tier_model("mini"),
+        "frontier": settings.tier_model("frontier"),
+        "embedding": settings.embedding_model_effective,
     }
     if "web_browse" in settings.enabled_tools_list or settings.enable_web_browse:
         tiers["stagehand"] = settings.stagehand_model
@@ -368,9 +368,9 @@ def build_app() -> FastAPI:
             "status": "ok",
             "provider": settings.llm_provider,
             "models": {
-                "nano": settings.nano_model,
-                "mini": settings.mini_model,
-                "frontier": settings.frontier_model,
+                "nano": settings.tier_model("nano"),
+                "mini": settings.tier_model("mini"),
+                "frontier": settings.tier_model("frontier"),
             },
             "reasoning_effort": settings.reasoning_effort,
             "endpoint": settings.foundry_base_url

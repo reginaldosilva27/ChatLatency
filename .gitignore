@@ -8,3 +8,4 @@ reports/*.json
 .DS_Store
 chroma/
 reports/*.html
+.env.bak*

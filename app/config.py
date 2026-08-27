@@ -36,6 +36,17 @@ class Settings(BaseSettings):
     frontier_model: str = "gpt-5.6-terra"
     embedding_model: str = "text-embedding-3-small"
 
+    # Per-provider tier overrides. The tier vars above hold Azure deployment
+    # names; these let an OpenAI model name sit alongside them, so LLM_PROVIDER
+    # becomes the only line that changes when switching providers. Without them,
+    # switching means rewriting three names and losing the other provider's set -
+    # which makes a provider A/B a manual edit instead of a toggle.
+    # Empty => fall back to the tier var above.
+    openai_nano_model: str | None = None
+    openai_mini_model: str | None = None
+    openai_frontier_model: str | None = None
+    openai_embedding_model: str | None = None
+
     max_output_tokens: int = 250  # reference: ~250 output tokens per turn
     temperature: float = 0.2
 
@@ -167,6 +178,33 @@ class Settings(BaseSettings):
         if self.enable_web_browse and "web_browse" not in tools:
             tools.append("web_browse")
         return tools
+
+    def tier_model(self, tier: str) -> str:
+        """The model/deployment name for a tier, honouring a per-provider override.
+
+        Everything that needs to name a model goes through here - the LLM client,
+        the price resolution and /healthz - so a tier can never be billed under
+        one name and called under another.
+        """
+        base = {
+            "nano": self.nano_model,
+            "mini": self.mini_model,
+            "frontier": self.frontier_model,
+        }[tier]
+        if self.llm_provider == "openai":
+            override = {
+                "nano": self.openai_nano_model,
+                "mini": self.openai_mini_model,
+                "frontier": self.openai_frontier_model,
+            }[tier]
+            return override or base
+        return base
+
+    @property
+    def embedding_model_effective(self) -> str:
+        if self.llm_provider == "openai" and self.openai_embedding_model:
+            return self.openai_embedding_model
+        return self.embedding_model
 
     @property
     def is_mock(self) -> bool:

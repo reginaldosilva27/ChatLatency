@@ -328,6 +328,7 @@ what allows an A/B inside one process without a restart.
 | `WEB_SEARCH_BACKEND` | `browserbase` · `duckduckgo` (keyless) · `tavily` · `brave` · `serper` |
 | `WEB_FETCH_MAX_CHARS` | cap on what Fetch returns to the model — a cost lever |
 | `LLM_PROVIDER` | `foundry` · `azure` · `openai` · `mock` |
+| `OPENAI_*_MODEL` | per-provider tier overrides, so both providers' model names coexist and `LLM_PROVIDER` is the only line that changes |
 
 ### Decisions worth recording
 
