@@ -229,7 +229,20 @@ def build_app() -> FastAPI:
             history_turns=len(req.history) // 2,
         )
         payload = trace.to_dict()
-        app.state.buffer.add(payload)
+        # The buffer keeps up to 5,000 traces for the percentile endpoint, and
+        # percentiles need durations, not transcripts. The payloads go to the
+        # client that asked for this turn and stop there - keeping a page of
+        # markdown per turn in a 5,000 slot ring buffer is how a local
+        # instrument turns into a memory leak.
+        app.state.buffer.add(
+            {k: v for k, v in payload.items() if k not in ("hops", "tool_calls")}
+            | {
+                "tool_calls": [
+                    {k: v for k, v in c.items() if k != "result"}
+                    for c in payload.get("tool_calls") or []
+                ]
+            }
+        )
         return payload
 
     # ---------------- streaming (the measured path) ----------------

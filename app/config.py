@@ -122,6 +122,17 @@ class Settings(BaseSettings):
     enable_web_browse: bool = False
     max_tool_hops: int = 3  # ceiling on model round trips per turn
 
+    # ---------- what the trace carries ----------
+    # The raw exchange with the model - the messages sent on each hop, the text
+    # or tool_calls that came back, and each tool's actual output. Without it
+    # the trace answers "how long" and "how much" but not "what happened", and
+    # the three questions you actually debug with are: did it call the tool, did
+    # the tool return anything usable, and what did the model see when it wrote
+    # the answer. On by default because this engine exists to be looked at; the
+    # per-field cap keeps a 6,000 character page from becoming the trace.
+    trace_payloads: bool = True
+    trace_payload_chars: int = 4000
+
     chroma_collection: str = "kb_local"
     chroma_persist_dir: str | None = None  # empty => in-memory index, rebuilt at startup
 

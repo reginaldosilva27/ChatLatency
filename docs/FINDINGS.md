@@ -1,7 +1,7 @@
 # Findings
 
-Sixteen findings that came out of measuring, not of assuming. Most of them hold for any
-stack; findings 09 to 11 are specific to Azure AI Foundry, and 12 to 16 appear once the
+Eighteen findings that came out of measuring, not of assuming. Most of them hold for any
+stack; findings 09 to 11 are specific to Azure AI Foundry, and 12 to 18 appear once the
 agent gets tools.
 
 **Measurement environment.** Local macOS. Two rounds — one against `api.openai.com`
@@ -40,8 +40,10 @@ into the new domain would turn a measurement into a story.
 | 14 | Local RAG (ChromaDB + in-process ONNX) does embedding **and** search in **23–45 ms** | against 360 ms for one remote embedding |
 | 15 | Search without snippets forces a **third hop**: 7,123 ms against 3,460 ms | and 7.1 s is the floor, not the ceiling |
 | 16 | A tool that runs a model internally has **invisible cost** — 497 tokens and 6.4 s off the books | every tool with an LLM inside must return its own `usage` |
+| 17 | A tool reported **`ok=True` on an HTTP 403**, and the model truncated its own input to 1,000 chars | a green tool call next to a failed answer is the instrument lying |
+| 18 | The **hop ceiling**, not the model, ends the loop — and it did not appear in the trace | "the tool never got called" was an exhausted budget |
 
-Findings 01 to 15 are measurements. The bug in the Stagehand documentation (`await` on a sync
+Findings 01 to 15 are measurements; 17 and 18 are defects the payload capture exposed. The bug in the Stagehand documentation (`await` on a sync
 method) is not in the list because it is not about latency — it is recorded in the tools
 section of the README.
 
@@ -283,6 +285,34 @@ waits for the whole answer.
 
 The engine detects this by itself: `stream_buffered` in the trace, and an explicit warning in
 the UI. It is also why it reports **two** token rates.
+
+### The detector's denominator, and a false positive it produced
+
+The flag first compared the stream window against the **whole turn**, and that was wrong in a
+way only the agent loop exposes. On `gpt-4.1-mini`, a perfectly incremental answer — 86
+tokens, 51 chunks, one chunk every 11 ms — was flagged as buffered, because 556 ms of
+streaming against a 2,710 ms turn is 21%, and half that turn was hop 1 deciding to call a
+tool. The denominator has to be the **hop that produced the text** (`answer_hop_ms`), where
+the same answer scores 34%.
+
+| case | share of the turn | share of the answering hop | streams? |
+|---|---|---|---|
+| `gpt-4.1-mini`, 2 hops, 86 tokens | 21% — *flagged* | **34%** | yes |
+| `gpt-5.6-terra`, 2 hops, 92 tokens | 5% | **9%** | no |
+| `gpt-5.6-terra` under the probe, 476 tokens | 5% | **5%** | no |
+| single hop, 250 tokens | 63% | **64%** | yes |
+
+Two other signals were tried and dropped, and both are instructive:
+
+- **Chunk cadence does not separate them.** 6.5 ms per token streaming against 3.2 ms per
+  token buffered — overlapping ranges, because a buffered answer still arrives in
+  RTT-spaced bursts rather than instantaneously.
+- **Delivery rate over generation rate is not a second opinion.** It reduces to
+  `answer_hop_ms / stream_ms` — the same number as the share, wearing a different hat.
+
+So the flag is one signal with a threshold, not a corroborated verdict, and it is documented
+as such in `app/telemetry.py`. The raw-byte probe remains the only test that settles a
+deployment. The cases above are pinned in `tests/test_stream_buffered.py`.
 
 ## 10 · Buffering tracks the deployment's capacity, not the model
 
@@ -580,3 +610,64 @@ hand, are real and measure what they claim to measure.
 4. Test the **capacity × buffering hypothesis** from finding 10 by raising a deployment's TPM.
 5. Implement the **hybrid agent** from finding 13: a heuristic picks the tool when it can, and
    the model decides only when the heuristic cannot.
+
+## 17 · A tool reported success while failing, and a model truncated its own input
+
+Two defects in the same turn, both invisible until the trace started carrying what the tools
+actually returned. The question was *"what is the current price of gpt-4.1-mini according to
+the OpenAI website?"* and the answer was a polite apology. The waterfall showed two green
+tool calls.
+
+**`web_fetch` returned `ok=True` on an HTTP 403.** There are two statuses in a fetch and only
+one was being checked: `raise_for_status` covers the call to Browserbase, which answers 200
+for a fetch it performed correctly, while the status of the *page* arrives inside the payload
+as `statusCode`. A 403 there produced `error=None`, `ok=True` and the content `"(empty
+page)"` — a green tool call sitting next to a model apologising that it could not read the
+page. The instrument said the tool worked while the turn visibly failed, which is the one
+thing a measurement must never do. An unreadable page is now an error, and an empty 200 —
+almost always a client-rendered page — is reported as `empty_page` rather than as content.
+
+**The model capped its own input below the useful content.** `web_fetch` exposed `max_chars`
+to the model. Asked for a price, it called `web_fetch(url, max_chars=1000)`, received 1,045
+characters of navigation boilerplate, and answered that *the page was truncated* and it could
+not find the price. It created the truncation and then reported it as a property of the page.
+The parameter was withdrawn: the cap is a cost lever that belongs to the operator
+(`WEB_FETCH_MAX_CHARS`), and the trace already reports `chars_raw` against `chars_sent`.
+
+The general rule, and the reason both survived so long: **`result_chars` is not a result.**
+A trace that records how many characters a tool returned, but not what they were, cannot
+distinguish a page from an error message of the same length. The engine now captures the raw
+exchange — the messages sent on each hop, the text or `tool_calls` that came back, and each
+tool's real output (`TRACE_PAYLOADS`, capped per field). Both defects were visible within one
+turn of switching it on.
+
+## 18 · The hop ceiling, not the model, ends the loop
+
+`MAX_TOOL_HOPS=3` reads like a safety net and behaves like a budget. Reaching the internet
+costs **two** hops — `web_search` returns titles and URLs with no snippet (finding 15), so
+`web_fetch` has to follow — plus one to answer. That is the entire ceiling, so a single
+wasted first hop makes the internet unreachable.
+
+Measured on the same question, with the tool list unchanged:
+
+| hop | before | after the prompt states the budget |
+|---|---|---|
+| 1 | `metric_lookup` | **`web_search`** |
+| 2 | `kb_search` | `web_fetch` |
+| 3 | answer: *"you would need to check the OpenAI website"* | answer from the page |
+
+Before, the model looked for an external price in documentation that only covers this
+engine's own measurements, spent both tool hops there, and produced a fluent answer with the
+internet never touched. Read from the outside that is indistinguishable from a broken tool —
+and it is what "the web search stopped working" actually was.
+
+Two changes, and the second matters more than the first:
+
+- The prompt now states the budget and the cost of reaching the internet, because **what a
+  correct first move is depends on how many moves there are.** A tool list without a step
+  count is an incomplete brief.
+- The trace records `hops_exhausted` when the tools were withdrawn on the last hop to force
+  an answer. "The model was finished" and "the model ran out of steps" produce the same shape
+  of answer — fluent, plausible, missing whatever the next tool would have found — and only
+  the trace can separate them. **A cap that does not appear in the trace is a cap that gets
+  blamed on the tool it silenced.**

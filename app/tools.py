@@ -38,7 +38,7 @@ import httpx
 from .config import Settings
 from .pricing import get_price_book
 from .retrieval import GlossaryTable
-from .telemetry import Trace
+from .telemetry import Trace, clip
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -65,6 +65,10 @@ class ToolCallRecord:
     result_chars: int
     meta: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    # What the tool actually returned, capped. `result_chars` stays the TRUE
+    # size: a 12 character result and a 40,000 character result truncated to
+    # 4,000 must not look the same in the trace.
+    result: str | None = None
 
     @property
     def duration_ms(self) -> float:
@@ -81,6 +85,7 @@ class ToolCallRecord:
             "result_chars": self.result_chars,
             "meta": self.meta,
             "error": self.error,
+            "result": self.result,
         }
 
 
@@ -470,18 +475,45 @@ class WebSearch:
         truncated = raw > cap
         if truncated:
             content = content[:cap] + f"\n\n[... truncated at {cap} of {raw} characters]"
-        return ToolResult(
-            content=content or "(empty page)",
-            meta={
-                "backend": "browserbase",
-                "url": url,
-                "status": data.get("statusCode"),
-                "content_type": data.get("contentType"),
-                "chars_raw": raw,
-                "chars_sent": len(content),
-                "truncated": truncated,
-            },
-        )
+
+        # TWO statuses, and only one of them was being checked.
+        #
+        # `raise_for_status` above covers the call to Browserbase, which answers
+        # 200 for a fetch it performed correctly. The status of the PAGE comes
+        # back inside the payload as `statusCode`, and a 403 there used to
+        # produce a tool call with error=None and the content "(empty page)":
+        # green in the waterfall, ok=True in the trace, and a model apologising
+        # that it could not read the page. The instrument said the tool worked
+        # while the turn visibly failed - the one thing a measurement must never
+        # do. An unreadable page is an error, and it is reported as one.
+        status = data.get("statusCode")
+        meta = {
+            "backend": "browserbase",
+            "url": url,
+            "status": status,
+            "content_type": data.get("contentType"),
+            "chars_raw": raw,
+            "chars_sent": len(content),
+            "truncated": truncated,
+        }
+        if isinstance(status, int) and status >= 400:
+            return ToolResult(
+                content=f"The page answered HTTP {status} and could not be read.",
+                meta=meta,
+                error=f"http_{status}",
+            )
+        if not content.strip():
+            # 200 with nothing in it: almost always a page that renders
+            # client-side, which is exactly what web_browse exists for.
+            return ToolResult(
+                content=(
+                    "The page returned no text. It most likely renders client-side, "
+                    "which this fetch does not execute."
+                ),
+                meta=meta,
+                error="empty_page",
+            )
+        return ToolResult(content=content, meta=meta)
 
     # ---------------- Browse (Stagehand) ----------------
 
@@ -834,14 +866,19 @@ def tool_schemas(metric_ids: list[str], enabled: set[str]) -> list[dict[str, Any
                     "and not just the title. It does not run JavaScript: if the page "
                     "comes back empty, the content probably only renders in a browser."
                 ),
+                # `max_chars` used to be offered here and was withdrawn on
+                # evidence. Asked for a price on a documentation page, the model
+                # called web_fetch with max_chars=1000, received 1,045
+                # characters of navigation boilerplate, and answered that the
+                # page was truncated and it could not find the price. It capped
+                # itself below the useful content and then reported the
+                # consequence as a limitation of the page. The cap is a cost
+                # lever that belongs to the operator (WEB_FETCH_MAX_CHARS), and
+                # the trace already reports chars_raw against chars_sent.
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "description": "Full URL to read."},
-                        "max_chars": {
-                            "type": "integer",
-                            "description": "Cap on characters returned.",
-                        },
                     },
                     "required": ["url"],
                 },
@@ -919,15 +956,20 @@ class ToolBox:
         if name == "web_search":
             return await self.web.search(args.get("query", ""), int(args.get("top_k") or 3))
         if name == "web_fetch":
-            return await self.web.fetch(
-                args.get("url", ""),
-                int(args["max_chars"]) if args.get("max_chars") else None,
-            )
+            # No max_chars from the model: see the schema above. The operator's
+            # WEB_FETCH_MAX_CHARS is the only cap.
+            return await self.web.fetch(args.get("url", ""))
         if name == "web_browse":
             return await self.web.browse(
                 args.get("url", ""), args.get("instruction", "Extract the main content.")
             )
         return ToolResult(content=f"Tool '{name}' does not exist.", error="unknown_tool")
+
+    def _payload(self, content: str) -> str | None:
+        """The tool's own output, for the trace. None when capture is off."""
+        if not self.s.trace_payloads:
+            return None
+        return clip(content, self.s.trace_payload_chars)
 
     async def run(self, name: str, args: dict[str, Any], trace: Trace) -> ToolCallRecord:
         """Runs one tool inside a `tool:<name>` span.
@@ -953,6 +995,7 @@ class ToolBox:
             result_chars=len(res.content),
             meta=res.meta,
             error=res.error,
+            result=self._payload(res.content),
         )
 
     async def run_many(
@@ -982,6 +1025,7 @@ class ToolBox:
                 result_chars=len(res.content),
                 meta=res.meta,
                 error=res.error,
+                result=self._payload(res.content),
             )
             return rec, res
 

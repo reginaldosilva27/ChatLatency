@@ -67,7 +67,21 @@ TOOL_SYSTEM_PROMPT = (
     "attribute call metric_lookup, and for a concept, mechanism or trade-off call "
     "kb_search - do not answer those from memory, even when you are confident. Only "
     "greetings, meta-questions about this conversation, and arithmetic you can hand to "
-    "latency_budget may skip the tools."
+    "latency_budget may skip the tools. "
+    # The hop budget is part of the prompt because it changes what a correct
+    # first move is. Reaching the internet costs TWO hops (web_search returns
+    # titles and URLs only, so web_fetch has to follow) plus a third to answer:
+    # with MAX_TOOL_HOPS=3 a wasted first hop makes the internet unreachable,
+    # and the model then answers "you would need to check the website" - which
+    # reads as a broken tool and is really an exhausted budget.
+    "One more constraint, and it is hard: you get a limited number of steps, and "
+    "reaching the internet costs two of them (web_search returns titles and URLs "
+    "only, so web_fetch must follow) plus one to answer. So when the user asks you "
+    "to search the internet, or asks about something current, external, or about "
+    "another company's product or pricing, call web_search on the FIRST step. Do "
+    "not spend a step on kb_search or metric_lookup first: this documentation only "
+    "covers this engine's own measurements, and looking there for an external "
+    "subject costs the step that would have reached the page."
 )
 
 INTENT_LABELS = [
@@ -247,11 +261,17 @@ class AgentRuntime:
 
         # On the last hop the tools are withdrawn: without that the model can ask
         # for a tool again and the turn ends with no answer.
-        tools = (
-            self.toolbox.schemas()
-            if (self.toolbox and hop < self.s.max_tool_hops)
-            else None
-        )
+        #
+        # That withdrawal is recorded, because it is the difference between "the
+        # model was finished" and "the model ran out of steps". They produce the
+        # same shape of answer - fluent, plausible, and missing whatever the
+        # next tool would have found - and only the trace can tell them apart.
+        # A cap that does not appear in the trace is a cap that gets blamed on
+        # the tool it silenced.
+        last_hop = bool(self.toolbox) and hop >= self.s.max_tool_hops
+        tools = None if last_hop else (self.toolbox.schemas() if self.toolbox else None)
+        if last_hop:
+            trace.set(hops_exhausted=True, max_tool_hops=self.s.max_tool_hops)
         outcome = StreamOutcome()
         tier: Tier = state.get("tier") or opts.get("force_tier") or "mini"
 
@@ -280,6 +300,20 @@ class AgentRuntime:
             span.__exit__(None, None, None)
 
         scratch: dict[str, Any] = {"usage": usage}
+
+        # What was sent and what came back, before the messages list is mutated
+        # below. `messages` at this point is exactly the request body's input.
+        if self.s.trace_payloads:
+            trace.record_hop(
+                hop=hop,
+                tier=tier,
+                model=self.llm.model_for(tier),
+                messages=messages,
+                text=outcome.text or "".join(pieces),
+                tool_calls=outcome.tool_calls,
+                tools_offered=None if tools is None else [t["function"]["name"] for t in tools],
+                cap=self.s.trace_payload_chars,
+            )
 
         # The model asked for tools: this hop's text (if any) is a preamble and
         # is not emitted - emitting it would inflate TTFT, which must mean "first
@@ -480,6 +514,20 @@ class AgentRuntime:
         trace.mark("last_token")
 
         answer = "".join(pieces)
+        # The fixed pipeline has exactly one hop, and it gets recorded like the
+        # agent's - otherwise the comparison between the two topologies is
+        # readable in the timings and blank in the payloads.
+        if self.s.trace_payloads:
+            trace.record_hop(
+                hop=1,
+                tier=tier,
+                model=self.llm.model_for(tier),
+                messages=messages,
+                text=answer,
+                tool_calls=[],
+                tools_offered=None,
+                cap=self.s.trace_payload_chars,
+            )
         await self._finalize(state, config, answer, usage, hops=1)
         return {"answer": answer, "output_tokens": usage.output_tokens}
 

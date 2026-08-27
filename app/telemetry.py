@@ -17,6 +17,7 @@ start label, so wall-clock never mixes with measurement.
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from collections import deque
@@ -46,6 +47,19 @@ STAGE_ORDER = [
 TOOL_PREFIX = "tool:"
 
 
+def clip(text: Any, cap: int) -> str:
+    """Text for a human to read, bounded, and honest about the boundary.
+
+    Truncation that does not announce itself is the worst kind: a page cut at
+    4,000 characters looks exactly like a page that ended there, and the reader
+    concludes the tool returned nothing useful.
+    """
+    s = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False, default=str)
+    if len(s) <= cap:
+        return s
+    return s[:cap] + f"\n[... {len(s) - cap} more characters, not shown in the trace]"
+
+
 @dataclass
 class Span:
     name: str
@@ -70,6 +84,9 @@ class Trace:
     spans: list[Span] = field(default_factory=list)
     marks: dict[str, float] = field(default_factory=dict)
     attrs: dict[str, Any] = field(default_factory=dict)
+    # The raw exchange, one entry per model hop. Populated only when
+    # TRACE_PAYLOADS is on; see `record_hop`.
+    hops: list[dict[str, Any]] = field(default_factory=list)
 
     # ---------- primitives ----------
 
@@ -105,6 +122,46 @@ class Trace:
 
     def set(self, **attrs: Any) -> None:
         self.attrs.update(attrs)
+
+    def record_hop(
+        self,
+        *,
+        hop: int,
+        tier: str,
+        model: str | None,
+        messages: list[dict[str, Any]],
+        text: str,
+        tool_calls: list[dict[str, Any]],
+        tools_offered: list[str] | None,
+        cap: int,
+    ) -> None:
+        """Stores what was actually sent to the model and what came back.
+
+        The messages are kept as they were sent, duplication included. Hop 3
+        really does re-send hop 1 and hop 2 plus every tool result, and that is
+        not noise to be tidied away - it is where the input token count comes
+        from, and the reason a third hop costs more than the first.
+        """
+        self.hops.append(
+            {
+                "hop": hop,
+                "tier": tier,
+                "model": model,
+                "tools_offered": tools_offered,
+                "messages_in": [
+                    {
+                        "role": m.get("role"),
+                        "name": m.get("name"),
+                        "content": clip(m.get("content") or "", cap),
+                        "tool_calls": m.get("tool_calls"),
+                        "tool_call_id": m.get("tool_call_id"),
+                    }
+                    for m in messages
+                ],
+                "text_out": clip(text, cap),
+                "tool_calls_out": tool_calls,
+            }
+        )
 
     # ---------- derived ----------
 
@@ -143,6 +200,24 @@ class Trace:
     def critical_path_ms(self) -> float:
         """Wall time to the first token (the number the user feels)."""
         return self.marks.get("first_token", self.now_ms())
+
+    def answer_hop_ms(self) -> float | None:
+        """Duration of the hop that produced the answer.
+
+        This is the only correct denominator for "was the text delivered
+        incrementally?". The question is local to one call: of the time THAT
+        call was open, how much of it was spending text on the wire? Measuring
+        it against the whole turn is a category error - in the agent loop the
+        turn also contains the hop that only decided about tools, and that hop
+        inflates the denominator until every short answer looks buffered.
+        """
+        hops = [s for s in self.spans if s.name.startswith("hop:") and s.duration_ms is not None]
+        if hops:
+            return max(hops, key=lambda s: s.start_ms).duration_ms
+        # Fixed pipeline: prefill + stream ARE the answering hop.
+        stages = self.stage_ms()
+        phase = (stages.get("model_ttft") or 0) + (stages.get("model_stream") or 0)
+        return phase or None
 
     def parallel_saving_ms(self) -> float | None:
         """What the fan-out saved: sequential sum - wall time of the parallel leg."""
@@ -193,16 +268,47 @@ class Trace:
             gen_tps = round(out_tokens / (model_phase / 1000.0), 1)
 
         stream_ms = (last - first) if (first is not None and last is not None) else None
-        # Below ~30 output tokens there is no way to tell "generated fast" from
-        # "delivered in one block", so nothing is claimed. A cache hit does not
-        # count either: there, instant delivery is the correct behaviour.
+
+        # Was the text delivered incrementally, or generated in full and then
+        # dispatched in one block?
+        #
+        # The share is measured against the ANSWERING HOP, not the turn. Using
+        # the turn was a false-positive generator: with an agent loop, the hop
+        # that only decides about tools can be half the turn, so a short answer
+        # streaming perfectly still landed under any share threshold.
+        #
+        # The signal is the share itself: an incremental stream spends a real
+        # fraction of the call's open window emitting text, while a block
+        # delivery spends almost none - the window is prefill, silence, dump.
+        # Measured against the answering hop the two separate cleanly: 34% and
+        # 64% for deployments that stream, 5% and 9% for one that does not.
+        #
+        # Two other candidate signals were tried and dropped, and it is worth
+        # recording why, because both look convincing:
+        #
+        #   chunk cadence      - the gap between chunks does NOT separate them.
+        #                        6.5 ms/token streaming against 3.2 ms/token
+        #                        buffered: the ranges overlap, because a dump
+        #                        still arrives in RTT-spaced bursts rather than
+        #                        instantaneously.
+        #   delivery vs. rate  - delivery_tps / (tokens per hop) is algebraically
+        #                        hop / stream_ms. It is the same number as the
+        #                        share, not a second opinion on it.
+        #
+        # So this is one signal with a threshold, not a corroborated verdict.
+        # `scripts/probe_streaming.py` reading raw bytes is still the only test
+        # that settles a deployment.
+        #
+        # Below ~30 output tokens the share cannot separate "generated fast"
+        # from "delivered in one block", so nothing is claimed. A cache hit does
+        # not count either: there, instant delivery is the correct behaviour.
+        hop = self.answer_hop_ms()
         buffered = bool(
             out_tokens > 30
             and self.attrs.get("cache_tier") not in ("l1", "l2")
             and stream_ms is not None
-            and last is not None
-            and last > 0
-            and stream_ms < 0.25 * last
+            and hop
+            and stream_ms < 0.25 * hop
         )
 
         return {
@@ -223,10 +329,15 @@ class Trace:
                 if sp.end_ms is not None and sp.duration_ms is not None
             ],
             "marks_ms": {k: round(v, 2) for k, v in self.marks.items()},
+            # The raw exchange, hop by hop. Empty unless TRACE_PAYLOADS is on.
+            "hops": self.hops,
             "first_token_ms": round(first, 2) if first is not None else None,
             "complete_ms": round(last, 2) if last is not None else None,
             "stream_ms": round(stream_ms, 2) if stream_ms is not None else None,
             "model_phase_ms": round(model_phase, 2) if model_phase else None,
+            # The denominator behind `stream_buffered`, exported so the UI
+            # states the same share the decision was made on.
+            "answer_hop_ms": round(hop, 2) if hop else None,
             # tokens_per_s = GENERATION rate (always valid). The delivery rate
             # goes separately, next to the buffering flag.
             "tokens_per_s": gen_tps,
