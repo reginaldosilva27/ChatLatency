@@ -308,6 +308,43 @@ by "predictable latency" and the p99 tail. What the measurement suggests is stro
 is the time of the complete answer regardless of the model. It stops being a tail
 optimisation and becomes a requirement of the conversational experience.
 
+### Retested on the same resource, with a purpose-built probe
+
+`scripts/probe_streaming.py` reads raw bytes off the socket and reports whether a deployment
+actually streams. Run against six deployments of the same Foundry resource, same region, same
+client, same ~350 word prompt:
+
+| deployment | model | TPM | 1st content | content window | bursts | verdict |
+|---|---|---|---|---|---|---|
+| `gpt-5.2-chat-2` | gpt-chat-latest | 3,439 | **871 ms** | 88% of 7,902 ms | 47 | incremental |
+| `gpt-5.4` | gpt-5.4 | 4,000 | **879–1,280 ms** | 83–90% | 38–96 | incremental |
+| `gpt-4.1-mini` | gpt-4.1-mini | 89,500 | **1,140 ms** | 76% of 5,380 ms | 58 | incremental |
+| `gpt-5.5` | gpt-5.5 | 2,000 | **1,475 ms** | 85% of 9,997 ms | 91 | incremental |
+| `gpt-5.6-terra` | gpt-5.6-terra | 250 | **7,627 ms** | **5% of 8,187 ms** | 32 | **one block** |
+
+The "content window" is the share of the total spent receiving text. At 5%, the answer was
+finished before the first character left the server: 1,299 ms to the first byte, then 6.3
+seconds of silence, then 476 tokens in 433 ms.
+
+The split now sits at five deployments streaming and one not, and the one that does not is
+the one with the lowest capacity by an order of magnitude. It remains a correlation - the
+clean test is still to raise the TPM of the buffering deployment and re-probe - but the
+practical conclusion no longer depends on settling the mechanism: **on this resource, the
+newest model is also the one with the worst perceived latency, and moving one tier to a
+higher-capacity deployment buys 6.3 seconds of first token.**
+
+Two things the probe surfaced along the way:
+
+- A model's family cannot be fully inferred from a deployment name. `gpt-5.2-chat-2` runs
+  `gpt-chat-latest`, which takes `max_completion_tokens` and rejects `temperature != 1` like
+  the rest of the gpt-5 family, but rejects `reasoning_effort: "none"` - it only accepts
+  `"medium"`. A single global `REASONING_EFFORT` therefore cannot serve three tiers pointing
+  at different models; the probe retries without the parameter, the engine would need a
+  per-tier setting.
+- `gpt-chat-latest` is not in the public price catalogue, so any tier pointed at it resolves
+  to `origin: fallback` and every cost it produces is a placeholder. Fast, but not priceable
+  without `PRICE_MODEL_ALIASES`.
+
 ## 11 · A frontier model as a classifier is expensive
 
 With `gpt-5.6-terra` serving the nano tier, intent classification cost **1,508–1,667 ms** per

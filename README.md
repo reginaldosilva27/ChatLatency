@@ -178,6 +178,16 @@ and delivered it in one block. The protocol was streaming; the experience was no
 ChatLatency detects this by itself and says so in plain language. If you see that warning,
 every "we stream, so it feels fast" claim in your architecture is currently false.
 
+To check a deployment before wiring it up, skip the UI and read the socket directly:
+
+```bash
+PYTHONPATH=. uv run python scripts/probe_streaming.py gpt-4.1-mini gpt-5.4 gpt-5.6-terra
+```
+
+On the resource these findings came from, that probe separated five deployments that stream
+from one that does not - and the one that does not was the newest model, at the lowest TPM.
+See [finding 10](docs/FINDINGS.md).
+
 ---
 
 ## The concepts, briefly
@@ -248,6 +258,7 @@ tests/
   test_pricing.py          what must hold about price regardless of the catalogue
   test_stagehand_shape.py  pins the Stagehand contract without needing a key
 scripts/
+  probe_streaming.py  reads raw bytes to tell whether a deployment really streams
   calibrate_l2.py  measures whether a safe semantic-cache threshold exists
   browse_once.py   runs web_browse and shows the cost of each sub-step
   fetch_prices.py  downloads the public price table -> data/model_prices.csv
@@ -371,6 +382,7 @@ Other things worth running:
 ```bash
 uv sync --extra dev && uv run pytest -q             # the price-catalogue test suite
 uv run ruff check .                                  # lint
+PYTHONPATH=. uv run python scripts/probe_streaming.py gpt-4.1-mini gpt-5.4  # does it really stream?
 PYTHONPATH=. uv run python scripts/calibrate_l2.py   # is there a safe L2 threshold? (no)
 PYTHONPATH=. uv run python scripts/browse_once.py    # where 12 seconds of browsing go
 uv run python scripts/fetch_prices.py --check        # CI: fail if list prices moved
