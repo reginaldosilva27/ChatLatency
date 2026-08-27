@@ -40,7 +40,7 @@ The agent is the instrument, not the product. Ask it about latency, streaming, R
 loops: it answers from an indexed corpus about exactly those topics, so the subject of the
 conversation is the thing you are measuring.
 
-**Sixteen things it found by measuring** are written up in **[docs/FINDINGS.md](docs/FINDINGS.md)**.
+**Eighteen things it found by measuring** are written up in **[docs/FINDINGS.md](docs/FINDINGS.md)**.
 Three of them are worth putting on the front page:
 
 - **The tool is never the cost — the hop is.** A tool that took 0.06 ms sat inside a turn that
@@ -257,6 +257,7 @@ bench/
 tests/
   test_pricing.py          what must hold about price regardless of the catalogue
   test_stagehand_shape.py  pins the Stagehand contract without needing a key
+  test_stream_buffered.py  pins the buffering detector to measured deployments
 scripts/
   probe_streaming.py  reads raw bytes to tell whether a deployment really streams
   calibrate_l2.py  measures whether a safe semantic-cache threshold exists
@@ -265,7 +266,7 @@ scripts/
 data/
   corpus.json       the indexed documents and the metric glossary (synthetic)
   model_prices.csv  price per model, versioned (see app/pricing.py)
-docs/FINDINGS.md    the sixteen findings, in full, with the numbers
+docs/FINDINGS.md    the eighteen findings, in full, with the numbers
 ```
 
 ### The two topologies

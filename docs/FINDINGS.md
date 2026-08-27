@@ -43,7 +43,7 @@ into the new domain would turn a measurement into a story.
 | 17 | A tool reported **`ok=True` on an HTTP 403**, and the model truncated its own input to 1,000 chars | a green tool call next to a failed answer is the instrument lying |
 | 18 | The **hop ceiling**, not the model, ends the loop — and it did not appear in the trace | "the tool never got called" was an exhausted budget |
 
-Findings 01 to 15 are measurements; 17 and 18 are defects the payload capture exposed. The bug in the Stagehand documentation (`await` on a sync
+Findings 01 to 16 are measurements; 17 and 18 are defects the payload capture exposed. The bug in the Stagehand documentation (`await` on a sync
 method) is not in the list because it is not about latency — it is recorded in the tools
 section of the README.
 
