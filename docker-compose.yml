@@ -1,0 +1,14 @@
+# A local Redis, so the cache can be measured with state OUTSIDE the process -
+# the architectural rule this is meant to test ("no state lives in application
+# memory"). Without it the harness falls back to an in-process dict, which is
+# faster than reality and is therefore flagged as cache_backend in the trace.
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

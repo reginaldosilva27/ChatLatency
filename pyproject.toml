@@ -1,0 +1,42 @@
+[project]
+name = "chatlatency"
+version = "1.0.0"
+description = "A chat that shows you the clock: a latency and streaming measurement engine for LLM agents (LangGraph + FastAPI + SSE)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "langgraph>=0.2.60",
+    "langchain-core>=0.3.28",
+    "langchain-openai>=0.2.14",
+    "openai>=1.59",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "redis>=5.2",
+    "httpx>=0.28",
+    "numpy>=2.2",
+    "rich>=13.9",
+    "python-dotenv>=1.0",
+    "chromadb>=1.5.9",
+]
+
+[project.optional-dependencies]
+# web_browse (Stagehand) is opt-in: a real browser, 10-30 s per call, and it
+# drags in the Browserbase SDK. Whoever does not use the tool does not need the
+# package - the import is lazy and the tool returns a clear error if it is absent.
+#   uv sync --extra browse
+browse = ["stagehand>=4.0"]
+
+# test dependencies:  uv sync --extra dev
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

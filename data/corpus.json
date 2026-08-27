@@ -1,0 +1,265 @@
+{
+  "_note": "Synthetic teaching corpus for ChatLatency. Nothing here is proprietary: the documents explain the concepts the harness measures (latency, streaming, RAG, agents, caching, cost), so the assistant can answer questions about its own subject matter. What matters is the SHAPE of the data - structured entities with exact attributes plus free-text documents - because that shape is what exercises the two latency paths this project compares: deterministic lookup and semantic search.",
+
+  "glossary": [
+    {
+      "id": "TTFT",
+      "name": "Time To First Token",
+      "category": "latency",
+      "unit": "milliseconds",
+      "measures": "wall-clock time from the user pressing send to the first visible character of the answer",
+      "how_to_measure": "start a monotonic clock in the client before the request; stop it on the first non-empty content delta",
+      "good_target": "under 1000 ms feels responsive; under 300 ms feels instant",
+      "dominated_by": "model prefill, network round trips, and every step that runs before the model is called",
+      "common_mistake": "measuring it on the server and calling it user-perceived latency - the client pays gateway and network on top"
+    },
+    {
+      "id": "ITL",
+      "name": "Inter-Token Latency",
+      "category": "latency",
+      "unit": "milliseconds per token",
+      "measures": "average gap between consecutive output tokens once generation has started",
+      "how_to_measure": "timestamp every delta and take the median gap; the mean hides stalls",
+      "good_target": "under 50 ms per token keeps text ahead of a fast reader",
+      "dominated_by": "model decode speed and per-chunk transport overhead",
+      "common_mistake": "confusing it with TTFT - a fast ITL cannot rescue a slow first token, the user has already waited"
+    },
+    {
+      "id": "TPS",
+      "name": "Output Tokens Per Second",
+      "category": "throughput",
+      "unit": "tokens per second",
+      "measures": "generation rate during the streaming phase",
+      "how_to_measure": "output tokens divided by the model phase (TTFT plus stream window), using provider usage for the token count",
+      "good_target": "40 to 80 tokens per second is comfortably faster than reading speed",
+      "dominated_by": "model size, deployment capacity, and concurrent load on the endpoint",
+      "common_mistake": "dividing tokens by the stream window alone - on a buffered endpoint that yields thousands of tokens per second and measures the network, not the model"
+    },
+    {
+      "id": "E2E",
+      "name": "End To End Latency",
+      "category": "latency",
+      "unit": "milliseconds",
+      "measures": "total time from send to the last token of the answer",
+      "how_to_measure": "same monotonic clock as TTFT, stopped when the stream closes",
+      "good_target": "depends on answer length; with streaming it matters far less than TTFT",
+      "dominated_by": "TTFT plus output tokens divided by tokens per second",
+      "common_mistake": "optimising it while ignoring TTFT - users judge a streaming answer by when it starts, not when it ends"
+    },
+    {
+      "id": "P95",
+      "name": "95th Percentile",
+      "category": "statistics",
+      "unit": "same unit as the measured metric",
+      "measures": "the value below which 95 percent of requests fall",
+      "how_to_measure": "sort the samples and interpolate; report alongside p50 and the sample count",
+      "good_target": "no absolute target - a healthy system has p95 within roughly 2x of p50",
+      "dominated_by": "queueing, cold paths, retries, and the slowest tool in an agent loop",
+      "common_mistake": "reporting an average - one 12 second outlier disappears into a mean and is exactly the request the user complains about"
+    },
+    {
+      "id": "HOP",
+      "name": "Model Hop",
+      "category": "agents",
+      "unit": "count",
+      "measures": "one complete request-response round trip to the model inside a single user turn",
+      "how_to_measure": "count provider usage records per turn, not per request - an agent turn produces several",
+      "good_target": "one hop for a direct answer; two when a tool is genuinely needed",
+      "dominated_by": "the agent topology - every tool decision costs a full prefill before any text is visible",
+      "common_mistake": "pricing an agent turn from the last hop only, which understates both cost and latency"
+    },
+    {
+      "id": "CACHE_HIT_RATE",
+      "name": "Cache Hit Rate",
+      "category": "caching",
+      "unit": "ratio between 0 and 1",
+      "measures": "share of turns answered from cache instead of the model",
+      "how_to_measure": "hits divided by total turns, segmented by cache tier - a blended number hides which tier pays off",
+      "good_target": "highly repetitive traffic reaches 0.3 to 0.6; open-ended chat rarely passes 0.1",
+      "dominated_by": "how repetitive the traffic is and how aggressively the key is normalised",
+      "common_mistake": "reporting one blended latency for hits and misses, which makes both numbers meaningless"
+    },
+    {
+      "id": "COST_PER_TURN",
+      "name": "Cost Per Turn",
+      "category": "cost",
+      "unit": "currency per turn",
+      "measures": "money spent on one user turn, summed across every model hop it triggered",
+      "how_to_measure": "sum provider usage across hops and price input, cached input and output separately",
+      "good_target": "no absolute target - track it per turn, not per request, and watch the ratio to answer length",
+      "dominated_by": "input tokens, because retrieved context and tool results are usually far larger than the answer",
+      "common_mistake": "estimating from character counts, and missing tokens burned inside a tool that calls a model of its own"
+    }
+  ],
+
+  "documents": [
+    {
+      "id": "doc-ttft-why",
+      "topic": "latency",
+      "title": "Why time to first token is the number that matters",
+      "type": "concept",
+      "locale": "en-US",
+      "text": "In a streaming interface the user judges speed by when the answer starts, not by when it ends. Time to first token is that moment. Everything that runs before the model is called - authentication, intent classification, retrieval, cache lookups, network hops - is paid in full before a single character appears, which is why a pipeline with four cheap steps can feel slower than one with a single expensive step. Total time still matters for cost and for capacity planning, but it is a poor proxy for perceived speed: once text is flowing at a rate faster than reading speed, additional tokens are effectively free from the user's point of view."
+    },
+    {
+      "id": "doc-latency-budget",
+      "topic": "latency",
+      "title": "How to build a latency budget",
+      "type": "guide",
+      "locale": "en-US",
+      "text": "A latency budget is one line per step on the critical path, each with a target in milliseconds, summing to the promise you are making to the user. Write it before optimising anything: it turns an argument about which step feels slow into arithmetic. A typical budget for a retrieval augmented turn allocates roughly 40 ms to gateway and network, 150 ms to retrieval, 1000 ms to model prefill, and the remainder to the first token appearing on screen. Then measure each line with its own span and compare. The steps that come out far under budget are not worth optimising; the ones far over are usually not the ones the team expected."
+    },
+    {
+      "id": "doc-percentiles",
+      "topic": "latency",
+      "title": "Report percentiles, never averages",
+      "type": "reference",
+      "locale": "en-US",
+      "text": "Latency distributions are right-skewed: a handful of requests take many times the median, and those are the requests users complain about. An average blends them away, and a single number cannot show that behaviour. Report p50 for the typical experience, p95 for the tail you must design for, and the sample count so the reader can judge whether the percentile means anything. Segment before aggregating: cache hits and cache misses are different populations, and a blended p50 across both describes an experience nobody actually has. The same applies to agent turns with and without tool calls."
+    },
+    {
+      "id": "doc-streaming-how",
+      "topic": "streaming",
+      "title": "How token streaming works over server sent events",
+      "type": "concept",
+      "locale": "en-US",
+      "text": "Streaming turns one long response into a sequence of small events. The server opens a long-lived HTTP response with content type text/event-stream and writes named events as they become available; the browser reads them incrementally with a stream reader instead of waiting for the body to complete. Each token event carries a text delta that the client appends to the visible answer. The value is entirely perceptual: the total generation time is unchanged, but the user starts reading after the first delta instead of after the last one. For that to hold, nothing between the model and the browser may buffer the body."
+    },
+    {
+      "id": "doc-streaming-buffering",
+      "topic": "streaming",
+      "title": "When streaming is not actually streaming",
+      "type": "pitfall",
+      "locale": "en-US",
+      "text": "A response can use the streaming protocol and still deliver nothing incrementally. Reverse proxies buffer response bodies by default, compression middleware waits for enough bytes to compress, and some model deployments generate the whole answer before emitting the first chunk. The symptom is unmistakable in a trace: the entire output arrives inside a window that is a tiny fraction of the total time, so the apparent delivery rate becomes thousands of tokens per second. The fix on the proxy side is to disable buffering and compression for the stream path; on the deployment side there is no fix, only a different deployment."
+    },
+    {
+      "id": "doc-streaming-perception",
+      "topic": "streaming",
+      "title": "Perceived latency versus total time",
+      "type": "concept",
+      "locale": "en-US",
+      "text": "An adult reads prose at roughly 4 to 6 words per second, which is well under 20 tokens per second. Any model streaming faster than that is producing text the user cannot consume in real time, so making generation faster stops improving the experience. This produces a counter-intuitive priority: 200 ms shaved off the first token is worth more than doubling the generation rate. It also explains why a visible progress signal - a timer, a caret, a skeleton - changes reported satisfaction without changing a single measured millisecond. Waiting with feedback is a different experience from waiting without it."
+    },
+    {
+      "id": "doc-rag-what",
+      "topic": "rag",
+      "title": "What retrieval augmented generation is",
+      "type": "concept",
+      "locale": "en-US",
+      "text": "Retrieval augmented generation answers a question in two steps: first find passages likely to contain the answer, then ask the model to answer using only those passages. It exists because a model cannot know your private or recent data, and because grounding an answer in retrieved text makes it checkable - you can show the source. The retrieval step adds latency and, more significantly, input tokens: the passages are usually far larger than the answer, so retrieval is a cost lever before it is a latency lever. Retrieving less and better beats retrieving more."
+    },
+    {
+      "id": "doc-rag-chunking",
+      "topic": "rag",
+      "title": "Chunking and top_k are latency and cost levers",
+      "type": "guide",
+      "locale": "en-US",
+      "text": "How you split documents decides both answer quality and prompt size. Chunks that are too small lose the context that makes a passage meaningful; chunks that are too large waste input tokens on text unrelated to the question. Retrieving the top three passages of roughly 100 to 200 words each is a reasonable default for a support-style question. Every additional passage adds input tokens on every single turn, which shows up in cost immediately and in latency through prefill. Measure answer quality against top_k before raising it: the second and third passages usually help, the eighth almost never does."
+    },
+    {
+      "id": "doc-rag-hybrid",
+      "topic": "rag",
+      "title": "Hybrid search, and when not to use search at all",
+      "type": "reference",
+      "locale": "en-US",
+      "text": "Hybrid retrieval combines a lexical score such as BM25 with vector similarity, then merges the rankings. Lexical matching handles exact identifiers, error codes and rare words that embeddings smooth away; vector similarity handles paraphrase. The combination is more robust than either alone. There is a third case that is neither: an exact structured attribute - a limit, a threshold, a unit - belongs in a lookup table, not in a search index. A dictionary lookup costs microseconds and cannot return an approximately correct number, while a vector search over the same fact costs tens of milliseconds and can."
+    },
+    {
+      "id": "doc-rag-embeddings",
+      "topic": "rag",
+      "title": "Local embeddings versus a remote embedding call",
+      "type": "guide",
+      "locale": "en-US",
+      "text": "Every embedding computed on the hot path is a decision with a measurable price. A remote embedding endpoint costs a network round trip, typically 40 to 400 ms depending on region and payload. A small sentence transformer running in-process costs single-digit to low tens of milliseconds and no network at all, at some cost in retrieval quality. For a corpus of tens or hundreds of documents, the local model is usually the better trade: it turns a variable network cost into a predictable compute cost. Index at startup, never inside a request - indexing is seconds, and seconds do not belong on the critical path."
+    },
+    {
+      "id": "doc-agents-what",
+      "topic": "agents",
+      "title": "What an AI agent loop actually is",
+      "type": "concept",
+      "locale": "en-US",
+      "text": "An agent is a loop: the model receives the conversation plus a list of tools it may call, and it either answers or asks for a tool. If it asks, the runtime executes the tool, appends the result to the conversation, and calls the model again. The loop repeats until the model answers or a hop limit is reached. What makes it powerful is that the routing decision is made by the model at request time rather than by a developer at design time. What makes it expensive is exactly the same thing: the decision itself costs a full model call, paid before the user sees any text."
+    },
+    {
+      "id": "doc-agents-hop-cost",
+      "topic": "agents",
+      "title": "The tool is rarely the cost - the hop is",
+      "type": "pitfall",
+      "locale": "en-US",
+      "text": "Teams instrument tools and leave the model calls uninstrumented, then conclude that tools are slow. Measure both and the picture inverts. A dictionary lookup costs a hundredth of a millisecond, a local vector search tens of milliseconds, a web search around a second. The model hop that decided to call any of them costs one to two seconds on its own. In a two-hop turn, the tool can account for well under one percent of the time to first token while the hops account for nearly all of it. The lever is topology - how many hops a turn needs - not tool micro-optimisation."
+    },
+    {
+      "id": "doc-agents-tool-design",
+      "topic": "agents",
+      "title": "Write tool descriptions that route",
+      "type": "guide",
+      "locale": "en-US",
+      "text": "A tool description is a routing instruction addressed to the model, and its most valuable sentence is usually the one saying when not to use the tool. Name the cheap alternative explicitly: a description reading use for how-to questions, but never for an exact numeric attribute - use the lookup tool for that prevents the expensive path from being chosen for a trivial question. State the cost class in the description too, so the model can prefer the cheapest tool that resolves the question. Ordering tools by cost and saying so out loud measurably reduces the number of unnecessary hops."
+    },
+    {
+      "id": "doc-agents-parallel",
+      "topic": "agents",
+      "title": "Run independent tools in parallel",
+      "type": "guide",
+      "locale": "en-US",
+      "text": "When a model requests several tools in one step, those calls are independent by construction - the model had no results yet when it asked. Execute them concurrently and the cost of the step becomes the slowest tool rather than the sum of all of them. A trace with absolute start and end timestamps per span shows this directly: a one second web search visually covers a sub-millisecond lookup that ran inside it. A trace that records durations only cannot show it, which is why a waterfall view is worth more than a table of totals when reasoning about an agent turn."
+    },
+    {
+      "id": "doc-cache-exact",
+      "topic": "caching",
+      "title": "Exact caching is the cheapest latency win available",
+      "type": "concept",
+      "locale": "en-US",
+      "text": "An exact cache maps a normalised question to a stored answer. Normalisation - lowercasing, stripping accents and punctuation, collapsing whitespace - raises the hit rate without any embedding. A hit skips the model entirely, which turns a one to two second turn into a lookup measured in tens of microseconds: three to four orders of magnitude, and the largest single latency improvement most conversational systems can make. The constraints are the boring ones that decide whether it is safe: a time to live short enough that stale answers expire, and a key that includes every dimension the answer depends on, such as language and tenant."
+    },
+    {
+      "id": "doc-cache-semantic",
+      "topic": "caching",
+      "title": "Semantic caching is not free, and not obviously safe",
+      "type": "pitfall",
+      "locale": "en-US",
+      "text": "A semantic cache reuses the answer to a similar question rather than an identical one. It costs an embedding of the incoming question on the hot path, on every request, including the misses - so unless the hit rate is high the average latency gets worse, not better. Correctness is the harder problem. Two questions can be near-identical as strings and have opposite correct answers, which means no similarity threshold cleanly separates a safe paraphrase from a dangerous near-match. Partition the cache by every dimension the answer depends on, and treat a semantic hit as a suggestion to verify rather than an answer to serve."
+    },
+    {
+      "id": "doc-cost-tokens",
+      "topic": "cost",
+      "title": "Read cost from provider usage, never from character counts",
+      "type": "reference",
+      "locale": "en-US",
+      "text": "Providers bill input, cached input and output tokens at three different rates, output typically being several times input. The only trustworthy source for those counts is the usage record the provider returns; a character-based estimate drifts, and it drifts most on the languages and formats you did not test. When streaming, ask for usage to be included in the final chunk. Two traps recur: an agent turn produces one usage record per hop and the turn costs their sum, and a tool that calls a model internally burns tokens that never appear in the calling turn's usage at all."
+    },
+    {
+      "id": "doc-cost-prompt-cache",
+      "topic": "cost",
+      "title": "Structure the prompt so the provider can cache it",
+      "type": "guide",
+      "locale": "en-US",
+      "text": "Most providers cache a prompt prefix and charge the cached portion at a large discount, often around a tenth of the input price. The mechanism is a prefix match, so it only works if the beginning of the payload is byte-identical between requests. Put the stable system instructions first, then slowly changing context, then the volatile parts - the retrieved passages and the user message - last. A timestamp or a session identifier injected at the top of the system prompt silently defeats the entire mechanism. Verify with the cached token count in the usage record instead of assuming it works."
+    },
+    {
+      "id": "doc-ttft-why-ptbr",
+      "topic": "latency",
+      "title": "Por que o tempo ate o primeiro token e o numero que importa",
+      "type": "concept",
+      "locale": "pt-BR",
+      "text": "Numa interface com streaming o usuario julga a velocidade por quando a resposta comeca, nao por quando ela termina. O tempo ate o primeiro token e esse instante. Tudo que roda antes da chamada ao modelo - autenticacao, classificacao de intencao, retrieval, consulta de cache, saltos de rede - e pago integralmente antes de qualquer caractere aparecer. O tempo total continua importando para custo e capacidade, mas e um proxy ruim de velocidade percebida: quando o texto flui mais rapido do que a leitura, tokens adicionais saem de graca na percepcao do usuario."
+    },
+    {
+      "id": "doc-agents-hop-cost-ptbr",
+      "topic": "agents",
+      "title": "A tool quase nunca e o custo - o hop e",
+      "type": "pitfall",
+      "locale": "pt-BR",
+      "text": "Times instrumentam as tools e deixam as chamadas de modelo sem medicao, e entao concluem que as tools sao lentas. Ao medir os dois, o quadro se inverte. Um lookup em dicionario custa centesimos de milissegundo, uma busca vetorial local dezenas de milissegundos, uma busca na internet cerca de um segundo. O hop de modelo que decidiu chamar qualquer uma delas custa um a dois segundos sozinho. Num turno de dois hops, a tool pode responder por menos de um por cento do tempo ate o primeiro token. A alavanca e a topologia, nao a micro-otimizacao da tool."
+    },
+    {
+      "id": "doc-cache-semantic-ptbr",
+      "topic": "caching",
+      "title": "Cache semantico nao e gratis nem obviamente seguro",
+      "type": "pitfall",
+      "locale": "pt-BR",
+      "text": "Um cache semantico reaproveita a resposta de uma pergunta parecida, nao identica. Ele custa um embedding da pergunta no caminho quente, em toda requisicao, inclusive nas que dao miss - se a taxa de acerto nao for alta, a latencia media piora. A correcao e o problema mais dificil: duas perguntas podem ser quase identicas como texto e ter respostas corretas opostas, o que significa que nenhum limiar de similaridade separa com seguranca uma parafrase de um vizinho perigoso. Particione o cache por toda dimensao de que a resposta depende."
+    }
+  ]
+}

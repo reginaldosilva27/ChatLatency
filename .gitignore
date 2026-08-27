@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+reports/*.json
+.ruff_cache/
+.playwright-mcp/
+.DS_Store
+chroma/
+reports/*.html
