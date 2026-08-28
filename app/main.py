@@ -62,6 +62,7 @@ class ChatRequest(BaseModel):
     detect_locale: bool | None = None
     classify_intent: bool | None = None
     cache_l1: bool | None = None
+    cache_canonical: bool | None = None
     cache_l2: bool | None = None
     force_tier: Literal["nano", "mini", "frontier"] | None = None
     agentic: bool | None = None
@@ -183,6 +184,7 @@ def build_app() -> FastAPI:
             "detect_locale": pick(req.detect_locale, settings.detect_locale),
             "classify_intent": pick(req.classify_intent, settings.classify_intent),
             "cache_l1": pick(req.cache_l1, settings.cache_l1_enabled),
+            "cache_canonical": pick(req.cache_canonical, settings.cache_canonical_enabled),
             "cache_l2": pick(req.cache_l2, settings.cache_l2_enabled),
             "force_tier": req.force_tier,
             "agentic": pick(req.agentic, settings.agentic),
@@ -420,6 +422,7 @@ def build_app() -> FastAPI:
                 "classify_intent": settings.classify_intent,
                 "speculative_retrieval": settings.speculative_retrieval,
                 "cache_l1": settings.cache_l1_enabled,
+                "cache_canonical": settings.cache_canonical_enabled,
                 "cache_l2": settings.cache_l2_enabled,
             },
         }

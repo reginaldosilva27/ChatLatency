@@ -1,6 +1,9 @@
 """Layered cache - the most talked-about latency lever, and the least measured.
 
 L1  exact     : normalised key (question + topic + locale) -> stored answer
+LC  canonical : (entity, attribute, locale) -> stored answer. An exact lookup
+                over the MEANING of the question rather than its text, so it
+                catches paraphrases without an embedding. Finding 06.
 L2  semantic  : embedding similarity against questions already answered
 L3  provider prompt cache : not implemented here (it lives on the model side),
                 but the system prompt is kept stable and at the start of the
@@ -10,6 +13,11 @@ One point this engine makes explicit, and almost no design prices in: L2 is
 NOT free - it costs an embedding call on the hot path (~40-120 ms). The
 cache_l2_embed and cache_l2_search spans measure that separately, so the
 decision of whether L2 pays for itself can be made with a number.
+
+LC exists because of what that number turned out to be next to L2's
+correctness. It buys the one thing L2 was wanted for - a paraphrase hitting -
+at L1's price and with L1's safety, by giving up the one thing L2 could do that
+it cannot: generalise over questions nobody has taught it to recognise.
 """
 
 from __future__ import annotations
@@ -46,6 +54,26 @@ def l1_key(question: str, topic: str | None, locale: str) -> str:
         sort_keys=True,
     )
     return "lat:l1:" + hashlib.sha256(payload.encode()).hexdigest()[:32]
+
+
+def lc_key(entity: str, attribute: str, locale: str) -> str:
+    """Key for the canonical tier - built from what the question MEANS.
+
+    Note what is absent: the question, and the topic. The question is absent
+    because its wording is exactly what this tier is meant to see past. The
+    topic is absent because the entity replaces it - an entity is a strictly
+    finer partition than a topic, which is the partition finding 07 needed
+    after the semantic cache served one entity's limit to another.
+
+    Two questions therefore share this key only when they name the same
+    attribute of the same entity, and that is a claim a reviewer can check by
+    reading `_METRIC_ALIASES` and `_ATTRIBUTE_CUES`. It moves the correctness
+    burden from a threshold nobody can justify onto a table anybody can audit.
+    """
+    payload = json.dumps(
+        {"e": entity.upper(), "a": attribute.lower(), "l": locale}, sort_keys=True
+    )
+    return "lat:lc:" + hashlib.sha256(payload.encode()).hexdigest()[:32]
 
 
 @dataclass

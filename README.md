@@ -40,7 +40,7 @@ The agent is the instrument, not the product. Ask it about latency, streaming, R
 loops: it answers from an indexed corpus about exactly those topics, so the subject of the
 conversation is the thing you are measuring.
 
-**Eighteen things it found by measuring** are written up in **[docs/FINDINGS.md](docs/FINDINGS.md)**.
+**Nineteen things it found by measuring** are written up in **[docs/FINDINGS.md](docs/FINDINGS.md)**.
 Three of them are worth putting on the front page:
 
 - **The tool is never the cost — the hop is.** A tool that took 0.06 ms sat inside a turn that
@@ -50,7 +50,8 @@ Three of them are worth putting on the front page:
   takes 8 seconds" comes from, and it is not the model being slow.
 - **A semantic cache has no safe threshold.** "How do I enable a webhook" and "how do I
   disable a webhook" score 0.79 similarity. A legitimate paraphrase scored 0.48. The ranges
-  are inverted, so no cut-off is safe.
+  are inverted, so no cut-off is safe — the way out is a key that can *decline*, which is
+  now implemented and keeps 7 of 7 adversarial pairs apart with no threshold at all.
 
 ---
 
@@ -149,6 +150,13 @@ Turn *Exact cache (L1)* off in Config and it goes back to being slow.
 What you are seeing: an exact cache over a normalised key. Cheap, safe, and almost always
 under-used. Note the readout says `cost 0 — cache`: it also spent no tokens.
 
+Now ask it a third time, **rephrased** — "what unit is TTFT measured in?" then "in which unit
+do you report time to first token?". The tag reads `cache canonical` and the turn still lands
+in about a millisecond, because that tier is keyed on the `(entity, attribute)` the question
+asks for and not on how it was typed. Then try the trap: ask the same thing about a *different*
+metric ("what unit is inter-token latency measured in?") and watch it correctly miss. That
+pair is the whole argument for keying on meaning rather than on similarity — finding 19.
+
 ### 2. The hop: ask something that needs a tool
 
 Ask *"what unit is TTFT measured in?"*. The model calls `metric_lookup`, an in-memory dict
@@ -224,10 +232,13 @@ again. What makes it powerful is that routing is decided at request time rather 
 time. What makes it expensive is exactly the same thing: the decision itself is a full model
 call, paid before any text is visible.
 
-**Caching** has two very different tiers. An exact cache maps a normalised question to a
-stored answer and is close to free. A semantic cache reuses the answer to a *similar*
+**Caching** has three very different tiers here. An exact cache maps a normalised question to
+a stored answer and is close to free. A semantic cache reuses the answer to a *similar*
 question, which costs an embedding on the hot path on every request — including the misses —
-and carries a correctness problem that has no clean solution (see finding 06).
+and carries a correctness problem that has no clean solution (see finding 06). Between them
+sits a canonical cache, keyed on the `(entity, attribute)` the question asks for rather than
+on its wording: it catches a paraphrase at the exact cache's price, and its safety comes from
+declining every question it cannot name instead of from a threshold (finding 19).
 
 **Cost** must come from the provider's usage record, per hop, summed across the turn. Two
 traps recur: an agent turn produces one usage record per hop and costs their sum, and a tool
@@ -243,7 +254,7 @@ app/
   config.py     levers and providers - everything affecting latency is explicit
   telemetry.py  Trace with spans mapped 1:1 onto the reference budget
   llm.py        nano/mini/frontier tiers, parameter shim, real usage and cost
-  cache.py      exact L1 + semantic L2, Redis or in-process fallback (flagged)
+  cache.py      exact L1 + canonical (entity, attribute) + semantic L2, Redis optional
   retrieval.py  structured lookup + hybrid BM25 index + Azure AI Search
   tools.py      six tools, each individually timed; ChromaDB and the internet
   graph.py      the LangGraph graph: agent loop and fixed pipeline, comparable
@@ -258,15 +269,17 @@ tests/
   test_pricing.py          what must hold about price regardless of the catalogue
   test_stagehand_shape.py  pins the Stagehand contract without needing a key
   test_stream_buffered.py  pins the buffering detector to measured deployments
+  test_canonical_cache.py  the correctness gate: adversarial pairs that MUST miss
 scripts/
   probe_streaming.py  reads raw bytes to tell whether a deployment really streams
-  calibrate_l2.py  measures whether a safe semantic-cache threshold exists
+  calibrate_l2.py  measures whether a safe semantic-cache threshold exists (no)
+  calibrate_canonical.py  the same pairs through the canonical key - offline, exits !=0 on a collision
   browse_once.py   runs web_browse and shows the cost of each sub-step
   fetch_prices.py  downloads the public price table -> data/model_prices.csv
 data/
   corpus.json       the indexed documents and the metric glossary (synthetic)
   model_prices.csv  price per model, versioned (see app/pricing.py)
-docs/FINDINGS.md    the eighteen findings, in full, with the numbers
+docs/FINDINGS.md    the nineteen findings, in full, with the numbers
 ```
 
 ### The two topologies
@@ -321,7 +334,7 @@ what allows an A/B inside one process without a restart.
 | `SPECULATIVE_RETRIEVAL` | fan out intent ∥ retrieval vs. run them in sequence |
 | `CLASSIFY_INTENT` | intent on or off the critical path |
 | `DETECT_LOCALE` | LLM language detection |
-| `CACHE_L1_ENABLED` / `CACHE_L2_ENABLED` | the cache tiers |
+| `CACHE_L1_ENABLED` / `CACHE_CANONICAL_ENABLED` / `CACHE_L2_ENABLED` | the three cache tiers |
 | `CACHE_L2_THRESHOLD` | minimum similarity for a semantic hit |
 | `REASONING_EFFORT` | reasoning effort (gpt-5.x / o-series) |
 | `force_tier` (per request only) | forces nano/mini/frontier, bypassing the router |
@@ -386,6 +399,7 @@ uv sync --extra dev && uv run pytest -q             # the price-catalogue test s
 uv run ruff check .                                  # lint
 PYTHONPATH=. uv run python scripts/probe_streaming.py gpt-4.1-mini gpt-5.4  # does it really stream?
 PYTHONPATH=. uv run python scripts/calibrate_l2.py   # is there a safe L2 threshold? (no)
+PYTHONPATH=. uv run python scripts/calibrate_canonical.py  # the canonical key on the same pairs
 PYTHONPATH=. uv run python scripts/browse_once.py    # where 12 seconds of browsing go
 uv run python scripts/fetch_prices.py --check        # CI: fail if list prices moved
 uv run python -m tests.test_stagehand_shape          # pins the Stagehand contract

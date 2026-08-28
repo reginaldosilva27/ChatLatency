@@ -1,6 +1,6 @@
 # Findings
 
-Eighteen findings that came out of measuring, not of assuming. Most of them hold for any
+Nineteen findings that came out of measuring, not of assuming. Most of them hold for any
 stack; findings 09 to 11 are specific to Azure AI Foundry, and 12 to 18 appear once the
 agent gets tools.
 
@@ -42,8 +42,10 @@ into the new domain would turn a measurement into a story.
 | 16 | A tool that runs a model internally has **invisible cost** — 497 tokens and 6.4 s off the books | every tool with an LLM inside must return its own `usage` |
 | 17 | A tool reported **`ok=True` on an HTTP 403**, and the model truncated its own input to 1,000 chars | a green tool call next to a failed answer is the instrument lying |
 | 18 | The **hop ceiling**, not the model, ends the loop — and it did not appear in the trace | "the tool never got called" was an exhausted budget |
+| 19 | The canonical key needs no threshold: **7/7 adversarial pairs kept apart**, and a paraphrase served in **1.1 ms** | finding 06's way out, implemented — plus two defects it exposed |
 
-Findings 01 to 16 are measurements; 17 and 18 are defects the payload capture exposed. The bug in the Stagehand documentation (`await` on a sync
+Findings 01 to 16 are measurements; 17 to 19 are defects, the first two exposed by the
+payload capture and the last two by building the fix for finding 06. The bug in the Stagehand documentation (`await` on a sync
 method) is not in the list because it is not about latency — it is recorded in the tools
 section of the README.
 
@@ -201,6 +203,10 @@ limit and a wrong procedure, stated with confidence.
 **That is why L2 ships off by default** (`CACHE_L2_ENABLED=false`), with the reason recorded
 in `.env.example`. It can still be turned on for measurement; the `cache-curve` scenario
 turns it on by itself.
+
+> **Resolved.** The canonical key below is implemented and shipped on
+> (`CACHE_CANONICAL_ENABLED=true`). Measurements, and the two defects building it exposed,
+> are in [finding 19](#19--the-canonical-key-and-the-two-defects-it-exposed).
 
 The way out is not a looser cut-off, it is **replacing similarity with a canonical key**:
 
@@ -554,6 +560,7 @@ latency is measured by isolating.
 | Agent | 1 documentation agent | real, no registry |
 | **LLM** | Foundry / Azure OpenAI / OpenAI | **real** — real tokens, real cost |
 | Exact cache (L1) | `app/cache.py` | real; in-process `dict`, Redis optional |
+| Canonical cache | `app/cache.py` + `app/retrieval.py` | **real**, on — `(entity, attribute)`, finding 19 |
 | Semantic cache (L2) | `app/cache.py` | real, **off** (finding 06) |
 | Tools | `app/tools.py` | **real** — 6 tools, individually timed |
 | RAG | **ChromaDB + in-process ONNX** | **real** — synthetic data |
@@ -605,8 +612,10 @@ hand, are real and measure what they claim to measure.
 1. Repeat `ab-intent` and `cache-curve` in the target region and SKU — the two scenarios
    whose conclusions change the architecture.
 2. Implement the **heuristic router** and measure the accuracy loss against the 828 ms.
-3. Prototype the **canonical-key cache** `(entity, attribute)` from finding 06 and compare hit
-   rate and correctness against similarity-based L2.
+3. ~~Prototype the **canonical-key cache** `(entity, attribute)` from finding 06~~ — done,
+   finding 19. What is left is the recall half: the cue tables miss paraphrases like "how is
+   throughput measured", and widening them needs its own safety pass, because a looser cue
+   maps a question onto the wrong attribute.
 4. Test the **capacity × buffering hypothesis** from finding 10 by raising a deployment's TPM.
 5. Implement the **hybrid agent** from finding 13: a heuristic picks the tool when it can, and
    the model decides only when the heuristic cannot.
@@ -671,3 +680,75 @@ Two changes, and the second matters more than the first:
   of answer — fluent, plausible, missing whatever the next tool would have found — and only
   the trace can separate them. **A cap that does not appear in the trace is a cap that gets
   blamed on the tool it silenced.**
+
+## 19 · The canonical key, and the two defects it exposed
+
+Finding 06 ended in a recommendation rather than a fix: replace similarity with a canonical
+key over `(entity, attribute)`. This is that key, implemented and measured — and the more
+useful half of the result is what building it found.
+
+**The tier.** `app/retrieval.py` already had the parts: `detect_metric` names the entity,
+`_ATTRIBUTE_CUES` names the attribute. The key is those two plus the locale (`lc_key`), so the
+question's *wording* never reaches it. Storage is L1's, because an exact lookup over a derived
+key needs no vector and no embedding — which is why a paraphrase costs a dict access here and
+cost 360 ms on every request in finding 04.
+
+Measured with `LLM_PROVIDER=mock` (which pins the model's contribution, so the cache tier is
+the only thing varying), at `MOCK_TTFT_MS=300` and `MOCK_TOKENS_PER_S=400`, `RETRIEVER=stub`,
+agent loop, in-process cache backend. The miss column is therefore a *simulated* model, quoted
+only so the tiers can be read against something; what is measured here is the cache:
+
+| turn | tier | complete |
+|---|---|---|
+| "what unit is TTFT measured in?" | miss | 877 ms |
+| the same string, again | `l1` | **1.5 ms** |
+| "in which unit do you report time to first token?" | `canonical` | **1.1 ms** |
+| "what unit is inter-token latency measured in?" | miss | 890 ms |
+
+Row three is the finding: a paraphrase nobody had asked before, answered at L1's price. Row
+four is the safety property sitting in the same table — same attribute, different entity,
+correctly a miss.
+
+**Safety, on the pairs that defeated similarity.** `scripts/calibrate_canonical.py` runs
+`calibrate_l2.py`'s own pair lists — imported, not copied, so the comparison cannot drift —
+through the canonical key: **7 of 7 adversarial pairs kept apart, zero collisions.** Recall is
+partial on purpose: 2 of the 3 paraphrase pairs that name a glossary entity share a key, and
+the other 2 of 5 name no entity, so they produce no key at all.
+
+That asymmetry *is* the mechanism. Similarity always answers — it returns its nearest
+neighbour whatever the distance — so its only available defence is a threshold, and finding 06
+measured that no threshold exists. A canonical key can **decline**. "How do I enable
+streaming?" and "how do I disable streaming?", the pair that scored 0.79 and broke the
+semantic cache, name no entity in this glossary: both produce no key, so neither can serve the
+other. The safety is not a tuned cut-off, it is a smaller mouth.
+
+And what is left is auditable. The script needs no embedding, no provider, no credential and
+no network — it runs offline because a canonical key is a property of two tables you can read,
+where similarity is a property of a model you can only sample.
+
+### The two defects building it exposed
+
+Both are the same shape — a cache claiming something it did not have — and **neither would
+have failed a latency test.**
+
+**`p50` and `p99` were aliases of the `P95` entry**, whose `measures` reads *"the value below
+which 95 percent of requests fall"*. So "what does p50 measure?" resolved to `(P95, measures)`,
+and the canonical cache would have served the p95 definition for p50 — in 1 ms, with
+confidence. That is finding 07's failure mode reproduced inside the tier built to prevent it.
+The fix was to stop claiming the aliases: the entry models one percentile, so `p50` and `p99`
+now decline. Note where the bug lived and what fixing it took — one row of one table, and
+reading the row. This is the property being bought, more than the milliseconds.
+
+**The post-cache edge enumerated tier names.** `if cache_tier in ("l1", "l2")`, written twice,
+once per topology. A third tier satisfied neither branch, so its hits fell through to the full
+pipeline: the trace reported `cache_tier=canonical` while the answer was quietly regenerated,
+and the "hit" cost **1,043 ms instead of 1 ms**. The instrument reported a hit the engine never
+took, which is precisely what finding 17 established a measurement must never do. The
+condition now asks whether there is an answer to serve rather than listing which tiers are
+allowed to have one, so a fourth tier cannot forget to register itself. The UI carried the
+same list, also twice, also fixed.
+
+The rule worth keeping: **a new cache tier needs a correctness gate before it needs a latency
+number.** `tests/test_canonical_cache.py` is that gate — adversarial pairs that must miss,
+paraphrases that must hit, and the known recall gaps pinned, so that editing the cue tables
+shows up here as a diff instead of passing unnoticed.

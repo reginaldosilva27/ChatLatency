@@ -544,13 +544,21 @@ input:focus-visible + .sw{outline:2px solid var(--amber);outline-offset:2px}
 
     <div class="group">
       <h3>Caching</h3>
-      <p>The exact cache is the cheapest win available. The semantic cache is not free:
-         it costs an embedding on every request, hits and misses alike.</p>
+      <p>The exact cache is the cheapest win available. The canonical cache buys what
+         the semantic one was wanted for at the same price. The semantic cache is not
+         free: it costs an embedding on every request, hits and misses alike.</p>
       <label class="opt">
         <input type="checkbox" id="cfg-l1"><span class="sw"></span>
         <span class="txt"><b>Exact cache (L1)</b>
           <span>Normalised question → stored answer. Ask the same thing twice to see
                 the floor.</span></span>
+      </label>
+      <label class="opt">
+        <input type="checkbox" id="cfg-canon"><span class="sw"></span>
+        <span class="txt"><b>Canonical cache</b>
+          <span>Keyed on <code>(entity, attribute)</code> instead of the wording, so a
+                paraphrase hits with no embedding. Declines what it cannot name, which
+                is why it needs no threshold.</span></span>
       </label>
       <label class="opt">
         <input type="checkbox" id="cfg-l2"><span class="sw"></span>
@@ -595,7 +603,7 @@ input:focus-visible + .sw{outline:2px solid var(--amber);outline-offset:2px}
    ============================================================= */
 const DEFAULTS = {
   agentic:true, intent:true, spec:true, locale:false, tier:"",
-  l1:true, l2:false, hist:true, ctx:false, api:"", theme:"dark"
+  l1:true, canon:true, l2:false, hist:true, ctx:false, api:"", theme:"dark"
 };
 const CFG = Object.assign({}, DEFAULTS, load("chatlatency.cfg"));
 const QS = new URLSearchParams(location.search);
@@ -649,7 +657,7 @@ applyTheme();
 /* =============================================================
    Config drawer
    ============================================================= */
-const TOGGLES = ["agentic","intent","spec","locale","l1","l2","hist","ctx"];
+const TOGGLES = ["agentic","intent","spec","locale","l1","canon","l2","hist","ctx"];
 function syncDrawer(){
   TOGGLES.forEach(k => { const n = $("cfg-" + k); if (n) n.checked = !!CFG[k]; });
   [...$("cfg-tier").children].forEach(b => b.classList.toggle("on", b.dataset.v === CFG.tier));
@@ -657,6 +665,7 @@ function syncDrawer(){
   const bits = [
     CFG.agentic ? "agentic" : "fixed pipeline",
     CFG.l1 ? "L1 on" : "L1 off",
+    CFG.canon ? null : "canonical off",
     CFG.l2 ? "L2 on" : null,
     CFG.tier ? "tier " + CFG.tier : null,
     CFG.hist ? null : "no history"
@@ -906,6 +915,7 @@ async function send(){
     speculative_retrieval: CFG.spec,
     detect_locale: CFG.locale,
     cache_l1: CFG.l1,
+    cache_canonical: CFG.canon,
     cache_l2: CFG.l2,
     force_tier: CFG.tier || null
   };
@@ -976,7 +986,7 @@ async function send(){
       ttft: ttft ?? doneMs,
       total: doneMs,
       cost: trace.cost_total || 0,
-      hit: trace.cache_tier === "l1" || trace.cache_tier === "l2"
+      hit: !!trace.cache_tier && trace.cache_tier !== "miss"
     });
     renderMeters();
   }
@@ -997,6 +1007,7 @@ async function send(){
    ============================================================= */
 const SPAN = {
   "cache_l1":            ["Exact cache",              "#7E8C99"],
+  "cache_canonical":     ["Canonical cache",          "#5FA8A0"],
   "cache_l2_embed":      ["Semantic cache · embed",   "#C98A2E"],
   "cache_l2_search":     ["Semantic cache · search",  "#E0A83C"],
   "locale":              ["Detect the language",      "#9B7BD4"],
@@ -1260,7 +1271,7 @@ function card({trace, ttft, doneMs, chunks, err}){
   const t = trace || {};
   const out = t.output_tokens ?? null;
   const streamMs = ttft != null ? doneMs - ttft : null;
-  const hit = t.cache_tier === "l1" || t.cache_tier === "l2";
+  const hit = !!t.cache_tier && t.cache_tier !== "miss";
   const buffered = !!t.stream_buffered;
   const cost = t.cost_total;
   const cur = t.currency || "USD";

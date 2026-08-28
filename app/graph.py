@@ -37,7 +37,7 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from .cache import CacheEntry, LayeredCache, l1_key
+from .cache import CacheEntry, LayeredCache, l1_key, lc_key
 from .config import Settings
 from .llm import LLM, StreamOutcome, Tier, Usage
 from .retrieval import Chunk, GlossaryTable, Retriever
@@ -123,7 +123,7 @@ class AgentState(AgentInput, total=False):
     chunks: list[Chunk]
     tier: Tier
     fixed_fact: str | None
-    cache_tier: Literal["l1", "l2", "miss"]
+    cache_tier: Literal["l1", "canonical", "l2", "miss"]
     cached_answer: str | None
     cache_similarity: float | None
     answer: str
@@ -172,6 +172,26 @@ class AgentRuntime:
             if hit:
                 return {"cache_tier": "l1", "cached_answer": hit["answer"]}
 
+        # The canonical tier is tried BEFORE L2 on purpose: it is an exact
+        # lookup, so it costs a dict access, while L2 costs an embedding on the
+        # hot path whether it hits or not (finding 04). Ordering the cheap and
+        # safe tier first means a question both could answer never pays for the
+        # expensive and unsafe one.
+        if opts["cache_canonical"]:
+            # One span for both halves: extracting the key is pure CPU over two
+            # small tables, and splitting it out would put a microsecond bar in
+            # the waterfall next to the lookup it belongs to.
+            async with trace.aspan("cache_canonical"):
+                pair = self.table.canonical_key(question)
+                hit = (
+                    await self.cache.get_l1(lc_key(*pair, locale))
+                    if pair is not None
+                    else None
+                )
+            if hit:
+                trace.set(cache_canonical_key=f"{pair[0]}.{pair[1]}")
+                return {"cache_tier": "canonical", "cached_answer": hit["answer"]}
+
         if opts["cache_l2"]:
             # L2 costs an embedding on the hot path - measured separately.
             async with trace.aspan("cache_l2_embed"):
@@ -189,6 +209,20 @@ class AgentRuntime:
             return {"cache_tier": "miss", "scratch": {"l2_vector": vector}}
 
         return {"cache_tier": "miss"}
+
+    @staticmethod
+    def _was_a_hit(state: AgentState) -> bool:
+        """Whether the lookup produced something to serve.
+
+        Deliberately not a list of tier names. It used to be `in ("l1", "l2")`,
+        written twice - once per topology - and adding the canonical tier made
+        both fall through to the full pipeline: the trace said `canonical`, the
+        answer was regenerated, and the hit cost 1,043 ms instead of 1 ms. A
+        cache that reports a hit and pays for a miss is the one bug this engine
+        exists to catch, so the condition now asks the only question that
+        matters and a new tier cannot forget to register itself.
+        """
+        return bool(state.get("cached_answer"))
 
     async def n_serve_cached(self, state: AgentState, config) -> dict[str, Any]:
         """Serving a cache hit. By default it sends the answer at once (which
@@ -551,20 +585,27 @@ class AgentRuntime:
             usage.hops = max(usage.hops, hops)
             trace.set(usage_source="estimated (tiktoken)", **usage.cost(self.s, model))
 
+        entry = CacheEntry(
+            answer=answer,
+            topic=state.get("topic"),
+            locale=state["locale"],
+            question=state["question"],
+        )
+
         if opts["cache_l1"] and answer:
             key = l1_key(state["question"], state.get("topic"), state["locale"])
-            await self.cache.set_l1(
-                key,
-                CacheEntry(
-                    answer=answer,
-                    topic=state.get("topic"),
-                    locale=state["locale"],
-                    question=state["question"],
-                ),
-            )
+            await self.cache.set_l1(key, entry)
             vector = (state.get("scratch") or {}).get("l2_vector")
             if opts["cache_l2"] and vector:
                 await self.cache.index_l2(key, vector, state["locale"], state.get("topic"))
+
+        # Written independently of L1: the two tiers answer different questions
+        # (this text, versus this meaning) and one being off is not a reason to
+        # stop populating the other.
+        if opts["cache_canonical"] and answer:
+            pair = self.table.canonical_key(state["question"])
+            if pair is not None:
+                await self.cache.set_l1(lc_key(*pair, state["locale"]), entry)
 
     # ---------------------- assembly ----------------------
 
@@ -593,7 +634,7 @@ class AgentRuntime:
             g.add_node("tools", self.n_tools)
             g.add_conditional_edges(
                 "cache_lookup",
-                lambda s: "serve_cached" if s.get("cache_tier") in ("l1", "l2") else "agent",
+                lambda s: "serve_cached" if self._was_a_hit(s) else "agent",
                 ["serve_cached", "agent"],
             )
             g.add_conditional_edges("agent", self._route_after_agent, ["tools", END])
@@ -617,7 +658,7 @@ class AgentRuntime:
                 work_entry = ["retrieval"]
 
             def _after_cache(s: AgentState) -> list[str]:
-                if s.get("cache_tier") in ("l1", "l2"):
+                if self._was_a_hit(s):
                     return ["serve_cached"]
                 return work_entry
 

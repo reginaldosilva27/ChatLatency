@@ -76,7 +76,13 @@ _METRIC_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "TPS": ("tps", "tokens per second", "tokens/s", "tok/s", "throughput", "tokens por segundo"),
     "E2E": ("e2e", "end to end", "end-to-end", "total time", "total latency", "tempo total"),
-    "P95": ("p95", "p99", "p50", "percentile", "percentil", "tail latency"),
+    # "p50" and "p99" are deliberately NOT aliases. This entry is the 95th
+    # percentile specifically - its `measures` reads "below which 95 percent of
+    # requests fall" - so accepting them made "what does p50 measure?" and
+    # "what does p95 measure?" the same (entity, attribute) and let the
+    # canonical cache serve the p95 definition for p50. Declining is the
+    # correct answer for an entity the glossary does not model; see finding 06.
+    "P95": ("p95", "percentile", "percentil", "tail latency"),
     "HOP": ("hop", "hops", "round trip", "round-trip", "model call"),
     "CACHE_HIT_RATE": ("hit rate", "cache hit rate", "taxa de acerto"),
     "COST_PER_TURN": ("cost per turn", "cost per interaction", "custo por turno"),
@@ -172,11 +178,27 @@ class GlossaryTable:
             }
         return {"content": json.dumps(entry, ensure_ascii=False), "found": True}
 
-    def resolve_fixed_fact(self, question: str, topic: str | None = None) -> str | None:
-        """Return a ready answer when the question asks for an exact attribute
-        of a known metric. Otherwise None, and the question goes to retrieval."""
-        metric_id = self.detect_metric(question)
-        entry = self.get(metric_id)
+    def canonical_key(self, question: str) -> tuple[str, str] | None:
+        """The `(entity, attribute)` pair a question asks for, or None.
+
+        This is the cache key finding 06 asks for, and the reason it is safe is
+        the None. Similarity always has an answer - it returns its nearest
+        neighbour whatever the distance - so its only defence is a threshold,
+        and finding 06 measured that no threshold separates a paraphrase from
+        an opposite. This function instead *declines*: a question whose entity
+        or attribute it cannot name produces no key, and no key is a miss.
+
+        The consequence is worth stating plainly, because it is the whole
+        trade. "How do I enable streaming?" and "how do I disable streaming?"
+        - the pair that scored 0.79 and broke the semantic cache - name no
+        entity in this corpus, so both produce None and neither can serve the
+        other. Safety here is not a tuned cut-off, it is a smaller mouth.
+
+        What is left is auditable: two questions collide only when a table says
+        they name the same attribute of the same entity, and a table can be
+        read. A similarity score cannot.
+        """
+        entry = self.get(self.detect_metric(question))
         if entry is None:
             return None
 
@@ -185,9 +207,19 @@ class GlossaryTable:
             if attribute not in entry:
                 continue
             if any(" ".join(tokenize(cue)) in q for cue in cues):
-                label = _ATTRIBUTE_LABEL.get(attribute, attribute)
-                return f"{entry['name']} ({entry['id']}): {label} = {entry[attribute]}."
+                return entry["id"], attribute
         return None
+
+    def resolve_fixed_fact(self, question: str, topic: str | None = None) -> str | None:
+        """Return a ready answer when the question asks for an exact attribute
+        of a known metric. Otherwise None, and the question goes to retrieval."""
+        key = self.canonical_key(question)
+        if key is None:
+            return None
+        metric_id, attribute = key
+        entry = self.by_id[metric_id]
+        label = _ATTRIBUTE_LABEL.get(attribute, attribute)
+        return f"{entry['name']} ({entry['id']}): {label} = {entry[attribute]}."
 
 
 # --------------------------------------------------------------------------

@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     classify_intent: bool = True
     speculative_retrieval: bool = True  # retrieval in parallel with intent
     cache_l1_enabled: bool = True  # exact
+    # The canonical tier ships ON. Finding 06's conclusion was not "no semantic
+    # cache", it was "replace similarity with a canonical key" - shipping the
+    # key off would be shipping the recommendation unadopted. It also costs no
+    # embedding, so unlike L2 there is no latency argument for keeping it off.
+    cache_canonical_enabled: bool = True  # (entity, attribute) - finding 06
     # L2 off by default: see scripts/calibrate_l2.py and the findings - there is
     # no threshold that separates a paraphrase from a near-match with the
     # opposite answer.

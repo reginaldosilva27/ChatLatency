@@ -29,6 +29,7 @@ from typing import Any
 # Canonical display order in the report (waterfall).
 STAGE_ORDER = [
     "cache_l1",
+    "cache_canonical",
     "hop:1",
     "hop:2",
     "hop:3",
