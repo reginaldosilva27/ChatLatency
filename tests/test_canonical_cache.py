@@ -97,6 +97,38 @@ def test_percentile_aliases_do_not_collapse_onto_p95(table: GlossaryTable) -> No
     assert table.canonical_key("what does p95 measure?") == ("P95", "measures")
 
 
+# Questions that MENTION a metric without asking for an attribute of it. This
+# class defeated the first version of the gate, because every adversarial pair
+# above is a short attribute question and none of them is shaped like this.
+COMPOUND = [
+    # The seeded UI question. "tokens/s" names TPS and "what does" cues
+    # `measures`, so it resolved to (TPS, measures) — and the canonical cache
+    # would have served this budget calculation to someone asking what tokens
+    # per second means, and the reverse. Finding 07, one tier up, again.
+    "My TTFT is 1800 ms with 2 hops, 60 tokens/s and a 250 token answer. "
+    "What does dropping one hop save?",
+    # numbers of the user's own: a calculation, not a lookup
+    "how many tokens per second do I need if TTFT is 900 ms?",
+    "my p95 is 4200 ms and my p50 is 900 ms, is that healthy?",
+    # more than one metric named: not a request for one attribute of one
+    "is TTFT or ITL more important?",
+    "what does TTFT measure and how does it relate to end-to-end latency?",
+]
+
+
+@pytest.mark.parametrize("question", COMPOUND)
+def test_a_question_that_only_mentions_a_metric_declines(
+    table: GlossaryTable, question: str
+) -> None:
+    assert table.canonical_key(question) is None
+
+
+def test_the_short_attribute_question_still_resolves(table: GlossaryTable) -> None:
+    """The guard must cost nothing on the shape it is meant to admit."""
+    assert table.canonical_key("what does TPS measure?") == ("TPS", "measures")
+    assert table.canonical_key("what unit is TTFT measured in?") == ("TTFT", "unit")
+
+
 # ---------------------------------------------------------------------------
 # RECALL
 # ---------------------------------------------------------------------------

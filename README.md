@@ -40,7 +40,7 @@ The agent is the instrument, not the product. Ask it about latency, streaming, R
 loops: it answers from an indexed corpus about exactly those topics, so the subject of the
 conversation is the thing you are measuring.
 
-**Nineteen things it found by measuring** are written up in **[docs/FINDINGS.md](docs/FINDINGS.md)**.
+**Twenty things it found by measuring** are written up in **[docs/FINDINGS.md](docs/FINDINGS.md)**.
 Three of them are worth putting on the front page:
 
 - **The tool is never the cost — the hop is.** A tool that took 0.06 ms sat inside a turn that
@@ -194,6 +194,12 @@ what to do. That is the trade: the agent loop buys flexibility with a round trip
 before the user sees anything. Measured across 14 requests, the difference was **+747 ms at
 p50** — and it is the same structural cost as an intent classifier, wearing a different name.
 
+There is now a third position. In Config, set *Intent* to `llm` and ask again: the fixed
+pipeline pays for its own round trip too, and the two topologies converge. Set it back to
+`heuristic` and the pipeline's call disappears while the agent's does not — because the
+agent's first hop *is* the tool decision. That asymmetry is finding 13, and it is what
+`SPECULATIVE_TOOLS` attacks by running the lookup before the model is asked.
+
 ### 4. The lie: check whether you are actually streaming
 
 Watch the `stream` figure in the strip below the readouts, and compare it with the total. If
@@ -312,6 +318,7 @@ app/
   telemetry.py  Trace with spans mapped 1:1 onto the reference budget
   llm.py        nano/mini/frontier tiers, parameter shim, real usage and cost
   cache.py      exact L1 + canonical (entity, attribute) + semantic L2, Redis optional
+  routing.py    the intent label without a round trip - findings 02, 08, 11
   retrieval.py  structured lookup + hybrid BM25 index + Azure AI Search
   tools.py      six tools, each individually timed; ChromaDB and the internet
   graph.py      the LangGraph graph: agent loop and fixed pipeline, comparable
@@ -327,6 +334,7 @@ tests/
   test_stagehand_shape.py  pins the Stagehand contract without needing a key
   test_stream_buffered.py  pins the buffering detector to measured deployments
   test_canonical_cache.py  the correctness gate: adversarial pairs that MUST miss
+  test_routing.py          what the tables decide, and when they refuse to
 scripts/
   probe_streaming.py  reads raw bytes to tell whether a deployment really streams
   calibrate_l2.py  measures whether a safe semantic-cache threshold exists (no)
@@ -336,7 +344,7 @@ scripts/
 data/
   corpus.json       the indexed documents and the metric glossary (synthetic)
   model_prices.csv  price per model, versioned (see app/pricing.py)
-docs/FINDINGS.md    the nineteen findings, in full, with the numbers
+docs/FINDINGS.md    the twenty findings, in full, with the numbers
 ```
 
 ### The two topologies
@@ -405,7 +413,8 @@ what allows an A/B inside one process without a restart.
 | `ENABLED_TOOLS` | which tools the model sees |
 | `MAX_TOOL_HOPS` | ceiling on model round trips per turn |
 | `SPECULATIVE_RETRIEVAL` | fan out intent ∥ retrieval vs. run them in sequence |
-| `CLASSIFY_INTENT` | intent on or off the critical path |
+| `INTENT_MODE` | `llm` (a round trip) · `heuristic` (a table) · `async` (both, one off the path) · `off` |
+| `SPECULATIVE_TOOLS` | run the lookup the heuristic is certain about *before* hop 1 |
 | `DETECT_LOCALE` | LLM language detection |
 | `CACHE_L1_ENABLED` / `CACHE_CANONICAL_ENABLED` / `CACHE_L2_ENABLED` | the three cache tiers |
 | `CACHE_L2_THRESHOLD` | minimum similarity for a semantic hit |
@@ -445,6 +454,7 @@ what allows an A/B inside one process without a restart.
 ```bash
 uv run python -m bench.load --scenario cold        --requests 30 --concurrency 5
 uv run python -m bench.load --scenario ab-intent   --requests 20 --concurrency 4
+uv run python -m bench.load --scenario ab-router   --requests 20 --concurrency 4
 uv run python -m bench.load --scenario ab-agentic  --requests 14 --concurrency 3
 uv run python -m bench.load --scenario ab-spec     --requests 20 --concurrency 4
 uv run python -m bench.load --scenario cache-curve --requests 30 --concurrency 5
@@ -456,6 +466,7 @@ uv run python -m bench.load --scenario mixed       --requests 60 --concurrency 1
 |---|---|
 | `cold` | what the first token is with a 100% cache miss |
 | `ab-intent` | what intent classification costs on the critical path |
+| `ab-router` | what replacing it with a table buys |
 | `ab-agentic` | what it costs to let the model pick the tools |
 | `ab-spec` | what speculative retrieval actually saves |
 | `cache-curve` | latency per cache tier, hits and misses kept apart |

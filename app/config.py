@@ -4,6 +4,7 @@ so each lever can be turned on and off in an A/B and measured in isolation."""
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,17 +18,22 @@ class Settings(BaseSettings):
     # mock    -> simulates TTFT and token rate; measures the harness's own overhead
     llm_provider: Literal["foundry", "azure", "openai", "mock"] = "foundry"
 
-    openai_api_key: str | None = None
+    # `repr=False` on every credential below. Pydantic renders the whole model
+    # in an assertion failure, so a settings object reaching a traceback used to
+    # print a live key into the test output - and into CI logs, in a public
+    # repository. The value still works everywhere; it just stops travelling
+    # inside error messages.
+    openai_api_key: str | None = Field(default=None, repr=False)
 
     # Foundry: accepts both the resource host and the project URL
     # (https://<resource>.services.ai.azure.com/api/projects/<project>) - the
     # /api/projects/... path belongs to the projects SDK and is dropped for
     # inference, which lives under /openai/v1/.
     azure_ai_endpoint: str | None = None
-    azure_ai_api_key: str | None = None
+    azure_ai_api_key: str | None = Field(default=None, repr=False)
 
     azure_openai_endpoint: str | None = None
-    azure_openai_api_key: str | None = None
+    azure_openai_api_key: str | None = Field(default=None, repr=False)
     azure_openai_api_version: str = "2024-10-21"
 
     # tiers: nano (locale/intent), mini (common questions), frontier (hard ones)
@@ -90,8 +96,27 @@ class Settings(BaseSettings):
 
     # ---------- latency levers ----------
     detect_locale: bool = False  # when the channel already knows the locale, this is waste
+    # How the intent label is produced. Findings 02, 11 and 13 measured the same
+    # sequential model round trip three times under three names; this is the
+    # lever that decides whether it happens before the first word.
+    #   llm        a nano call ON the critical path - what findings 02/11 measured
+    #   heuristic  app/routing.py, no network, ~0 ms                    (default)
+    #   async      heuristic on the path, the LLM label off it, for analytics
+    #   off        no label at all
+    # The default is `heuristic` because finding 02's conclusion was that LLM
+    # classification is slow AND imprecise as a router (finding 08). To
+    # reproduce the original numbers, send intent_mode per request or set it
+    # here - the `ab-intent` bench scenario does exactly that.
+    intent_mode: Literal["llm", "heuristic", "async", "off"] = "heuristic"
+    # Legacy switch, kept because `.env.example`, the README and the bench all
+    # name it. It only forces the mode off; it can no longer turn the LLM call
+    # back on, because that is what INTENT_MODE is for.
     classify_intent: bool = True
     speculative_retrieval: bool = True  # retrieval in parallel with intent
+    # Run the tool the heuristic is certain about BEFORE the first model hop, so
+    # the model answers on hop 1 instead of spending hop 1 deciding. Finding 13.
+    # Costs a dict lookup (0.03 ms, finding 12) when the bet is wrong.
+    speculative_tools: bool = True
     cache_l1_enabled: bool = True  # exact
     # The canonical tier ships ON. Finding 06's conclusion was not "no semantic
     # cache", it was "replace similarity with a canonical key" - shipping the
@@ -156,7 +181,7 @@ class Settings(BaseSettings):
     ] = "browserbase"
     web_search_timeout_s: float = 20.0
 
-    browserbase_api_key: str | None = None
+    browserbase_api_key: str | None = Field(default=None, repr=False)
     browserbase_project_id: str | None = None  # not required by Search/Fetch
     # Fetch can return up to 5 MB of markdown. Without a cap, one agent turn
     # swallows the whole page as input tokens - it is a cost and latency lever,
@@ -169,9 +194,9 @@ class Settings(BaseSettings):
     stagehand_model: str = "openai/gpt-4.1"
     stagehand_timeout_s: float = 90.0
 
-    tavily_api_key: str | None = None
-    brave_api_key: str | None = None
-    serper_api_key: str | None = None
+    tavily_api_key: str | None = Field(default=None, repr=False)
+    brave_api_key: str | None = Field(default=None, repr=False)
+    serper_api_key: str | None = Field(default=None, repr=False)
 
     # ---------- retrieval ----------
     # local  -> in-memory hybrid index over the local corpus (no cloud dependency)
@@ -182,7 +207,7 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 3
 
     azure_search_endpoint: str | None = None
-    azure_search_api_key: str | None = None
+    azure_search_api_key: str | None = Field(default=None, repr=False)
     azure_search_index: str = "kb-content"
 
     # ---------- external state ----------
@@ -200,6 +225,29 @@ class Settings(BaseSettings):
         if self.enable_web_browse and "web_browse" not in tools:
             tools.append("web_browse")
         return tools
+
+    @property
+    def effective_intent_mode(self) -> str:
+        """INTENT_MODE, with CLASSIFY_INTENT=false still able to switch it off."""
+        return self.intent_mode if self.classify_intent else "off"
+
+    @property
+    def tiers_collapsed(self) -> bool:
+        """True when all three tiers resolve to the same deployment.
+
+        Finding 11 is not a bug in this code, it is a configuration that looks
+        harmless: with the frontier model serving the nano tier, intent
+        classification cost 1,508-1,667 ms against 400 ms budgeted, and the
+        turn's first token moved by 1,266 ms. Nothing fails, nothing logs, and
+        the only symptom is a number nobody is looking at.
+
+        So the engine says it rather than leaving it to be discovered by
+        measurement. A collapsed set of tiers is a legitimate way to run - it is
+        the default in `.env.example`, because one deployment is what most
+        people have - but the cheap-tier jobs are then being billed and timed at
+        the expensive tier's rate, and that should be a fact on the page.
+        """
+        return len({self.tier_model(t) for t in ("nano", "mini", "frontier")}) == 1
 
     def tier_model(self, tier: str) -> str:
         """The model/deployment name for a tier, honouring a per-provider override.

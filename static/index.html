@@ -229,6 +229,9 @@ main{flex:1;display:flex;flex-direction:column;gap:26px;padding-bottom:26px}
 .ro b{display:block;font:500 23px/1.2 var(--mono);letter-spacing:-.035em;
       font-variant-numeric:tabular-nums;margin-top:7px}
 .ro b small{font-size:11px;color:var(--muted);letter-spacing:0;font-weight:400}
+/* A qualifier on its own line: the cached tokens are a PART of the input above,
+   and inline they read as a second figure to be added to it. */
+.ro b small.sub{display:block;margin-top:3px}
 .ro.hero b{color:var(--amber)} .ro.hit b{color:var(--mint)}
 .ro.warn b{color:var(--coral)}
 
@@ -264,6 +267,10 @@ main{flex:1;display:flex;flex-direction:column;gap:26px;padding-bottom:26px}
 .wf-row .n{font:400 11.5px/1.35 var(--mono);color:var(--muted);white-space:nowrap;
            overflow:hidden;text-overflow:ellipsis}
 .wf-row.tool .n{color:var(--ink-2)}
+/* A nested span - `model_stream` inside the hop that produced it - is indented
+   and marked, so the column of durations is not read as a sum. */
+.wf-row.nested .n{padding-left:13px;position:relative}
+.wf-row.nested .n::before{content:"\21B3";position:absolute;left:0;top:0;color:var(--faint)}
 .track{position:relative;height:16px;background:var(--sunken);border-radius:4px;
        overflow:hidden}
 .track::after{content:"";position:absolute;inset:0;
@@ -332,6 +339,36 @@ main{flex:1;display:flex;flex-direction:column;gap:26px;padding-bottom:26px}
 .verdict.held .status b:first-child{color:var(--mint)}
 .verdict.failed{border-left:2px solid var(--coral)}
 .verdict.failed .status b:first-child{color:var(--coral)}
+
+/* ---------- the duel: one question, two tiers, one axis ---------- */
+.duel{align-self:stretch}
+/* Three rows - header, answer, card - shared across both lanes via subgrid, so
+   the two waterfalls start at the same height on screen. Letting each lane
+   stack freely put the cards a whole answer apart whenever one model was more
+   verbose than the other, which is the one thing a side-by-side must not do:
+   the comparison is read by looking across, not by scrolling. */
+.lanes{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;
+       grid-template-rows:auto auto auto}
+.lane{min-width:0;background:var(--panel);border:1px solid var(--line);
+      border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;
+      grid-row:span 3;display:grid;grid-template-rows:subgrid}
+.lane-hd{display:flex;align-items:center;gap:9px;padding:9px 16px;min-height:40px;
+         border-bottom:1px solid var(--line);
+         background:linear-gradient(to bottom,var(--panel-2),var(--panel))}
+.lane-hd b{font:500 12px/1 var(--mono);color:var(--ink);letter-spacing:.04em}
+.lane-hd em{margin-left:auto;font:400 10.5px/1 var(--mono);font-style:normal;
+            color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lane-hd u{font:400 10px/1 var(--mono);text-decoration:none;padding:4px 7px;
+           border-radius:5px;background:var(--mint-dim);color:var(--mint)}
+.lane > .bubble.it{max-width:none;align-self:auto;background:none;border:0;
+                   border-radius:0;padding:14px 16px;font-size:14.5px;
+                   max-height:260px;overflow:auto}
+.lane > .card{border:0;border-radius:0;box-shadow:none;background:none}
+.lane > .card > .card-hd{border-top:1px solid var(--line)}
+/* A lane is half a page wide, so the waterfall borrows its narrow columns. */
+.lane .wf-row,.lane .axis{grid-template-columns:112px 1fr 62px;gap:8px}
+.lane .wf-row .n{font-size:10.5px}
+@media (max-width:940px){ .lanes{grid-template-columns:1fr} }
 
 .note{margin-top:14px;font-size:13px;line-height:1.5;color:var(--muted)}
 .note b{color:var(--ink-2);font-weight:600}
@@ -545,6 +582,12 @@ input:focus-visible + .sw{outline:2px solid var(--amber);outline-offset:2px}
     <div class="box">
       <textarea id="q" rows="1" placeholder="Ask about latency, streaming, RAG, agents, caching or cost…"
                 aria-label="Your message"></textarea>
+      <button class="btn" id="duelBtn"
+              title="Ask the same question of two tiers at once — both drawn on one axis, caches off">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M4 5v14M20 5v14M9 9h6M9 15h6"/></svg>
+        Duel
+      </button>
       <button class="btn primary" id="send">
         Send
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -552,7 +595,7 @@ input:focus-visible + .sw{outline:2px solid var(--amber);outline-offset:2px}
       </button>
     </div>
     <div class="hint">
-      <span><b>Enter</b> sends · <b>Shift+Enter</b> newline</span>
+      <span><b>Enter</b> sends · <b>Shift+Enter</b> newline · <b>Duel</b> asks two tiers at once</span>
       <span id="cfgSummary"></span>
     </div>
   </footer>
@@ -602,16 +645,29 @@ input:focus-visible + .sw{outline:2px solid var(--amber);outline-offset:2px}
           <span>On: the model chooses tools and the turn costs 2+ hops when it uses one.
                 Off: a fixed pipeline that always retrieves, <code>1 hop</code>.</span></span>
       </label>
-      <label class="opt">
-        <input type="checkbox" id="cfg-intent"><span class="sw"></span>
-        <span class="txt"><b>Classify intent first</b>
-          <span>An extra <code>nano</code> call before the answer. Only applies to the
-                fixed pipeline.</span></span>
-      </label>
+      <div class="field">
+        <label>Intent label</label>
+        <div class="seg" id="cfg-imode">
+          <button data-v="llm">llm</button><button data-v="heuristic">heuristic</button>
+          <button data-v="async">async</button><button data-v="off">off</button>
+        </div>
+        <span class="hint"><code>llm</code> is a <code>nano</code> round trip before the
+          answer — findings 02 and 11. <code>heuristic</code> reads the same tables the
+          canonical cache uses, with no network. <code>async</code> runs both and reports
+          <code>intent_agrees</code>, which is the only way to find out what the speed
+          cost in accuracy. Fixed pipeline only.</span>
+      </div>
       <label class="opt">
         <input type="checkbox" id="cfg-spec"><span class="sw"></span>
         <span class="txt"><b>Speculative retrieval</b>
           <span>Runs retrieval in parallel with intent instead of after it.</span></span>
+      </label>
+      <label class="opt">
+        <input type="checkbox" id="cfg-spectools"><span class="sw"></span>
+        <span class="txt"><b>Speculative tools</b>
+          <span>Agent loop only. Runs the lookup before hop 1 when the glossary names the
+                question's <code>(entity, attribute)</code> in full, so the model answers on
+                hop 1 instead of asking on it. A wrong bet costs 0.03 ms — finding 13.</span></span>
       </label>
       <label class="opt">
         <input type="checkbox" id="cfg-locale"><span class="sw"></span>
@@ -688,7 +744,7 @@ input:focus-visible + .sw{outline:2px solid var(--amber);outline-offset:2px}
    Config — persisted in localStorage; the conversation is not.
    ============================================================= */
 const DEFAULTS = {
-  agentic:true, intent:true, spec:true, locale:false, tier:"",
+  agentic:true, imode:"heuristic", spec:true, spectools:true, locale:false, tier:"",
   l1:true, canon:true, l2:false, hist:true, ctx:false, api:"", theme:"dark"
 };
 const CFG = Object.assign({}, DEFAULTS, load("chatlatency.cfg"));
@@ -743,13 +799,15 @@ applyTheme();
 /* =============================================================
    Config drawer
    ============================================================= */
-const TOGGLES = ["agentic","intent","spec","locale","l1","canon","l2","hist","ctx"];
+const TOGGLES = ["agentic","spec","spectools","locale","l1","canon","l2","hist","ctx"];
 function syncDrawer(){
   TOGGLES.forEach(k => { const n = $("cfg-" + k); if (n) n.checked = !!CFG[k]; });
   [...$("cfg-tier").children].forEach(b => b.classList.toggle("on", b.dataset.v === CFG.tier));
+  [...$("cfg-imode").children].forEach(b => b.classList.toggle("on", b.dataset.v === CFG.imode));
   $("cfg-api").value = CFG.api;
   const bits = [
     CFG.agentic ? "agentic" : "fixed pipeline",
+    CFG.imode === "heuristic" ? null : "intent " + CFG.imode,
     CFG.l1 ? "L1 on" : "L1 off",
     CFG.canon ? null : "canonical off",
     CFG.l2 ? "L2 on" : null,
@@ -764,6 +822,9 @@ TOGGLES.forEach(k => {
 });
 [...$("cfg-tier").children].forEach(b => {
   b.onclick = () => { CFG.tier = b.dataset.v; save(); syncDrawer(); };
+});
+[...$("cfg-imode").children].forEach(b => {
+  b.onclick = () => { CFG.imode = b.dataset.v; save(); syncDrawer(); };
 });
 $("cfg-api").onchange = e => { CFG.api = e.target.value.trim(); save(); syncDrawer(); readEnv(); };
 
@@ -1048,6 +1109,9 @@ syncDrawer();
    ============================================================= */
 let CORPUS = null;
 let BUDGET = null;   /* {targets_ms, spans} from /v1/budget */
+/* /healthz, kept: the duel labels each lane with the deployment behind the
+   tier, and warns when both tiers resolve to the same one. */
+let HEALTH = null;
 
 /* The pinned baseline. Comparing two configurations used to mean remembering
    four numbers from a card that had scrolled away, which is the difference
@@ -1059,7 +1123,7 @@ let BASELINE = null;
 async function readEnv(){
   const box = $("env");
   try {
-    const h = await (await fetch(`${API()}/healthz`)).json();
+    const h = HEALTH = await (await fetch(`${API()}/healthz`)).json();
     const c = [];
     c.push(`<span class="chip"><s></s>${esc(h.provider)} <b>${esc(h.models.mini)}</b></span>`);
     c.push(`<span class="chip">${h.agentic ? "agent loop" : "fixed pipeline"} · max <b>${h.max_tool_hops}</b> hops</span>`);
@@ -1140,6 +1204,164 @@ function renderHello(){
 }
 
 /* =============================================================
+   The duel
+   The same question, two tiers, fired together and drawn on ONE axis.
+   A single card answers "what did this turn cost". Two of them answer "what is
+   the trade", which is the question somebody actually has before choosing a
+   model - and it is not answerable by remembering a number from a card that
+   has scrolled away.
+   ============================================================= */
+const DUEL_TIERS = ["mini", "frontier"];
+
+async function duel(){
+  if (labRunning) return;
+  const text = ta.value.trim();
+  if (!text){ ta.focus(); return; }
+
+  labRunning = true;
+  $("send").disabled = true;
+  $("duelBtn").disabled = true;
+  if ($("log").querySelector(".hello")) $("log").innerHTML = "";
+  ta.value = ""; sizeTextarea();
+
+  const turn = el("div","turn");
+  turn.appendChild(el("div","bubble me", esc(text)));
+
+  const head = el("div","verdict running");
+  head.innerHTML = `<h4>the duel · one question, two tiers</h4>`
+    + `<p class="claim">${esc(text)}</p>`
+    + `<p class="status">both tiers running side by side, every cache tier off…</p>`;
+  turn.appendChild(head);
+
+  const wrap = el("div","duel");
+  const lanes = el("div","lanes");
+  wrap.appendChild(lanes);
+  turn.appendChild(wrap);
+  $("log").appendChild(turn);
+  stick(true);
+
+  const models = (HEALTH && HEALTH.models) || {};
+  const ui = DUEL_TIERS.map(tier => {
+    const node = el("div","lane");
+    node.appendChild(el("div","lane-hd",
+      `<b>${esc(tier)}</b><em>${esc(models[tier] || "?")}</em>`));
+    const bubble = el("div","bubble it");
+    const body = el("span"), caret = el("span","caret");
+    bubble.appendChild(body); bubble.appendChild(caret);
+    node.appendChild(bubble);
+    lanes.appendChild(node);
+    return {node, body, caret};
+  });
+
+  const base = {
+    question: text,
+    locale: "en-US",
+    /* No history and nothing written back to it: the duel asks the same
+       question twice, and a conversation that recorded both answers would be
+       lying about what was said. */
+    history: [],
+    user_context: CFG.ctx ? SESSION_CONTEXT : null,
+    agentic: CFG.agentic,
+    intent_mode: CFG.imode,
+    speculative_retrieval: CFG.spec,
+    detect_locale: CFG.locale,
+    /* Every cache tier off, in BOTH lanes, and this is not optional. The keys
+       are (question, topic, locale) - the model is not in them - so whichever
+       contestant finishes first would serve the other one its own answer, in
+       half a millisecond, at zero cost, and win by three orders of magnitude. */
+    cache_l1: false, cache_canonical: false, cache_l2: false
+  };
+
+  /* One clock for both lanes: they are dispatched in the same tick, so a shared
+     t0 makes the two first-token numbers directly comparable instead of nearly
+     comparable. */
+  const t0 = performance.now();
+  const runs = await Promise.all(DUEL_TIERS.map((tier, i) =>
+    streamTurn({...base, force_tier: tier}, {
+      t0,
+      delta: d => { ui[i].body.textContent += d; }
+    })));
+
+  ui.forEach(u => u.caret.remove());
+
+  /* The shared axis: the widest of the two, so the slower lane draws wider.
+     Without this the two charts are the same width and the picture says the
+     turns took the same time. */
+  const axisOf = r => Math.max(r.doneMs || 0,
+                               ...((r.trace && r.trace.spans) || []).map(sp => sp.end_ms || 0), 0);
+  const axisMax = Math.max(...runs.map(axisOf));
+
+  runs.forEach((r, i) => ui[i].node.appendChild(card({
+    trace: r.trace, ttft: r.ttft, doneMs: r.doneMs, chunks: r.chunks, err: r.err, axisMax
+  })));
+
+  head.classList.remove("running");
+  const broken = runs.find(r => r.err || !r.trace);
+  if (broken){
+    head.classList.add("failed");
+    head.querySelector(".status").innerHTML =
+      `<b>the duel did not finish</b> — ${esc(broken.err || "a lane returned no trace")}. `
+      + `Whatever the other lane measured stands alone, and one lane is not a comparison.`;
+  } else {
+    const ft = runs.map(r => r.ttft != null ? r.ttft : r.doneMs);
+    const cost = runs.map(r => r.trace.cost_total || 0);
+    const fast = ft[0] <= ft[1] ? 0 : 1;
+    const cheap = cost[0] <= cost[1] ? 0 : 1;
+    const gap = Math.abs(ft[0] - ft[1]);
+    const ratio = Math.min(...cost) > 0 ? Math.max(...cost) / Math.min(...cost) : null;
+
+    /* A gap this small is not a winner, it is the noise floor. Crowning one
+       lane for 3 ms would be the same error the p95 meter refuses to make with
+       one sample: a number presented as a result before it is one. */
+    const tie = gap < Math.max(50, 0.03 * Math.min(...ft));
+
+    if (!tie) ui[fast].node.querySelector(".lane-hd b")
+      .insertAdjacentHTML("afterend", `<u>first to the word</u>`);
+
+    /* Same deployment behind both tiers is not a duel. It is the same model
+       raced against itself, and the difference on screen is variance - the one
+       reading that would be taken for a model comparison and quoted as one. */
+    const collapsed = (HEALTH && HEALTH.tiers_collapsed)
+      || (models[DUEL_TIERS[0]] && models[DUEL_TIERS[0]] === models[DUEL_TIERS[1]]);
+
+    head.classList.add(collapsed ? "failed" : "held");
+    head.querySelector(".status").innerHTML =
+      (tie
+        ? `Both reached the first word within <b>${nf(gap)} ms</b> of each other `
+          + `(<b>${nf(ft[0])}</b> and <b>${nf(ft[1])} ms</b>) — a dead heat, not a result`
+        : `<b>${esc(DUEL_TIERS[fast])}</b> reached the first word in <b>${nf(ft[fast])} ms</b>, `
+          + `<b>${nf(gap)} ms</b> before ${esc(DUEL_TIERS[1 - fast])}`)
+      + (cost[0] === cost[1]
+          ? ` — and they cost the same.`
+          : ` — and ${tie
+                ? `<b>${esc(DUEL_TIERS[cheap])}</b> was the cheaper one`
+                : (fast === cheap ? "it was also the cheaper one" : "it is the one that cost more")}: `
+            + `<b>${cost[tie ? cheap : fast].toFixed(6)}</b> against `
+            + `<b>${cost[1 - (tie ? cheap : fast)].toFixed(6)} `
+            + `${esc(runs[0].trace.currency || "USD")}</b>`
+            + (ratio ? `, ${ratio.toFixed(1)}× apart` : "") + `.`);
+
+    head.appendChild(el("div", "note" + (collapsed ? " flag" : ""),
+      collapsed
+        ? `Both tiers resolve to the same deployment (<b>${esc(models[DUEL_TIERS[0]] || "?")}</b>), `
+          + `so this is one model raced against itself: the gap above is run-to-run variance, `
+          + `not a difference between models. Point the tiers at different deployments to make `
+          + `this a comparison.` + why("doc-cost-tokens")
+        : `One question, one sample each, fired in parallel with every cache tier disabled — `
+          + `so neither lane answered from the other's leftovers, and neither turn counts `
+          + `toward the session meters. A single pair does not settle a model choice: the same `
+          + `tier moves by hundreds of milliseconds between two runs of the same question. For `
+          + `a number worth acting on, run <b>uv run python -m bench.load --scenario tiers</b>, `
+          + `which repeats this with percentiles.` + why("doc-latency-budget")));
+  }
+
+  labRunning = false;
+  $("send").disabled = false;
+  $("duelBtn").disabled = false;
+  ta.focus();
+}
+
+/* =============================================================
    Session meters (client-side percentiles over this tab's turns)
    ============================================================= */
 function pct(vals, p){
@@ -1191,6 +1413,9 @@ ta.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); send(); }
 });
 $("send").onclick = send;
+/* The duel takes whatever is in the composer, like Send does - it is a second
+   way to ask the same question, not a separate mode with its own input. */
+$("duelBtn").onclick = duel;
 /* New chat clears the transcript and the history sent to the model. It leaves
    the session meters and the cache alone on purpose: percentiles get better
    with more samples, and both have their own control in Config. */
@@ -1226,6 +1451,59 @@ function follow(node){
 /* =============================================================
    The measured request
    ============================================================= */
+/* The transport, on its own: it POSTs, parses the SSE frames, and returns what
+   the turn measured. It is separate from `send` because the duel runs two of
+   them at the same time into two different corners of the page, and a second
+   copy of an SSE parser is a second place for the clock to be started on the
+   wrong line.
+
+   The clock belongs to the caller: `t0` is passed in, so the chronograph
+   running on screen and the number printed on the card are one measurement and
+   not two that nearly agree. */
+async function streamTurn(payload, on = {}){
+  const t0 = on.t0 ?? performance.now();
+  const r = {ttft:null, doneMs:null, chunks:0, trace:null, err:null, text:""};
+  try {
+    const resp = await fetch(`${API()}/v1/chat/stream`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} — ${(await resp.text()).slice(0,200)}`);
+
+    const reader = resp.body.getReader(), dec = new TextDecoder();
+    let buf = "", ev = null;
+    for(;;){
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream:true});
+      const lines = buf.split("\n"); buf = lines.pop();
+      for (const line of lines){
+        if (line.startsWith("event: ")) ev = line.slice(7).trim();
+        else if (line.startsWith("data: ")){
+          const d = JSON.parse(line.slice(6));
+          if (ev === "token"){
+            if (r.ttft === null){
+              /* >>> the clock stops here <<< */
+              r.ttft = performance.now() - t0;
+              on.firstToken?.(r.ttft);
+            }
+            r.chunks++;
+            r.text += d.d;
+            on.delta?.(d.d);
+          } else if (ev === "trace"){
+            r.trace = d; r.doneMs = performance.now() - t0;
+          } else if (ev === "done"){
+            if (!d.ok) r.err = d.error;
+          }
+        }
+      }
+    }
+  } catch(e){ r.err = e.message; }
+  if (r.doneMs === null) r.doneMs = performance.now() - t0;
+  return r;
+}
+
 /* `send` takes options so the Lab can drive it: a question that did not come
    from the textarea, and per-request overrides that do NOT touch the user's
    saved configuration. An experiment that silently rewrote your settings would
@@ -1264,7 +1542,7 @@ async function send(opts = {}){
   answer.appendChild(bubble);
 
   const t0 = performance.now();
-  let ttft = null, doneMs = null, chunks = 0, trace = null, err = null;
+  let ttft = null;
 
   const tick = setInterval(() => {
     const s = performance.now() - t0;
@@ -1278,8 +1556,9 @@ async function send(opts = {}){
     history: CFG.hist ? history.slice(-HISTORY_CAP) : [],
     user_context: CFG.ctx ? SESSION_CONTEXT : null,
     agentic: CFG.agentic,
-    classify_intent: CFG.intent,
+    intent_mode: CFG.imode,
     speculative_retrieval: CFG.spec,
+    speculative_tools: CFG.spectools,
     detect_locale: CFG.locale,
     cache_l1: CFG.l1,
     cache_canonical: CFG.canon,
@@ -1288,50 +1567,20 @@ async function send(opts = {}){
     ...(opts.override || {})
   };
 
-  try {
-    const resp = await fetch(`${API()}/v1/chat/stream`, {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify(payload)
-    });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status} — ${(await resp.text()).slice(0,200)}`);
-
-    const reader = resp.body.getReader(), dec = new TextDecoder();
-    let buf = "", ev = null;
-    for(;;){
-      const {done, value} = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, {stream:true});
-      const lines = buf.split("\n"); buf = lines.pop();
-      for (const line of lines){
-        if (line.startsWith("event: ")) ev = line.slice(7).trim();
-        else if (line.startsWith("data: ")){
-          const d = JSON.parse(line.slice(6));
-          if (ev === "token"){
-            if (ttft === null){
-              /* >>> the clock stops here <<< */
-              ttft = performance.now() - t0;
-              read.innerHTML = `${secs(ttft)}<u>s</u>`;
-              chrono.classList.add("hot");
-              cap.textContent = "first token";
-              turn.appendChild(answer);
-            }
-            chunks++;
-            body.textContent += d.d;
-            follow(bubble);
-          } else if (ev === "trace"){
-            trace = d; doneMs = performance.now() - t0;
-          } else if (ev === "done"){
-            if (!d.ok) err = d.error;
-          }
-        }
-      }
-    }
-  } catch(e){ err = e.message; }
+  const {doneMs, chunks, trace, err} = await streamTurn(payload, {
+    t0,
+    firstToken: v => {
+      ttft = v;
+      read.innerHTML = `${secs(v)}<u>s</u>`;
+      chrono.classList.add("hot");
+      cap.textContent = "first token";
+      turn.appendChild(answer);
+    },
+    delta: d => { body.textContent += d; follow(bubble); }
+  });
 
   clearInterval(tick);
   caret.remove();
-  if (doneMs === null) doneMs = performance.now() - t0;
 
   if (err && !body.textContent){
     answer.classList.add("err");
@@ -1370,13 +1619,17 @@ async function send(opts = {}){
 
 /* =============================================================
    Timeline
-   Warm colours = model hops (where the time goes).
-   Cool colours = tools (almost always cheap).
-   That mapping is the lesson, so it is enforced here.
+   Warm colours = model time (where the time goes).
+   Cool colours = everything that is not the model: tools, caches, retrieval.
+   That mapping is the lesson, so it is enforced here - which cost the web_*
+   tools their warm colours, two of which were the SAME hex as hop 2 and hop 3
+   and drew a tool bar that could not be told from the hop that called it.
+   No two spans that can appear in the same trace share a colour.
    ============================================================= */
 const SPAN = {
-  "cache_l1":            ["Exact cache",              "#7E8C99"],
+  "cache_l1":            ["Exact cache",              "#9BDCD2"],
   "cache_canonical":     ["Canonical cache",          "#5FA8A0"],
+  "intent_async":        ["Intent · off the path",    "#6E8FB8"],
   "cache_l2_embed":      ["Semantic cache · embed",   "#C98A2E"],
   "cache_l2_search":     ["Semantic cache · search",  "#E0A83C"],
   "locale":              ["Detect the language",      "#9B7BD4"],
@@ -1384,16 +1637,18 @@ const SPAN = {
   "retrieval":           ["Retrieve the context",     "#2FBF8F"],
   "route":               ["Pick the tier",            "#7E8C99"],
   "model_ttft":          ["Model prefill",            "#FFB74A"],
-  "model_stream":        ["Write the answer",         "#3FD9A4"],
+  "model_stream":        ["Write the answer",         "#FFD98A"],
   "hop:1":               ["Hop 1 — model decides",    "#FFB74A"],
   "hop:2":               ["Hop 2 — model answers",    "#FF8A5B"],
   "hop:3":               ["Hop 3 — model answers",    "#FF6B5A"],
   "tool:kb_search":      ["kb_search · vector index", "#2FBF8F"],
   "tool:metric_lookup":  ["metric_lookup · dict",     "#5FB3F0"],
   "tool:latency_budget": ["latency_budget · math",    "#8FD86B"],
-  "tool:web_search":     ["web_search · internet",    "#FF8A5B"],
-  "tool:web_fetch":      ["web_fetch · read a page",  "#FF6B5A"],
-  "tool:web_browse":     ["web_browse · real browser","#E85D9E"]
+  "tool:simulate_tool":  ["simulate_tool · a stopwatch", "#8AA6C8"],
+  "tool:summarize":      ["summarize · a model inside",  "#7FDCC0"],
+  "tool:web_search":     ["web_search · internet",    "#6C8CF5"],
+  "tool:web_fetch":      ["web_fetch · read a page",  "#4FC3E8"],
+  "tool:web_browse":     ["web_browse · real browser","#B06CF0"]
 };
 const spanInfo = n => SPAN[n] || [n, "#7E8C99"];
 const isTool = n => n.startsWith("tool:");
@@ -1406,12 +1661,16 @@ function budgetFor(name){
   return key ? (BUDGET.targets_ms || {})[key] ?? null : null;
 }
 
-function timeline(trace, ttft, doneMs){
+function timeline(trace, ttft, doneMs, axisMax){
   const spans = (trace.spans || []).filter(s => s.duration_ms != null);
   if (!spans.length) return null;
 
   const box = el("div","sect");
-  const total = Math.max(doneMs || 0, ...spans.map(s => s.end_ms));
+  /* `axisMax` is the duel's doing: two charts side by side, each scaled to its
+     own total, draw a 1.2 s turn and a 3.5 s turn at exactly the same width.
+     The reader compares the pictures, not the axes, so the axis has to be the
+     same one. Alone, a card is still scaled to itself. */
+  const total = Math.max(axisMax || 0, doneMs || 0, ...spans.map(s => s.end_ms));
   const ft = ttft ?? total;
 
   /* ---- stacked critical path up to the first token ----
@@ -1419,8 +1678,13 @@ function timeline(trace, ttft, doneMs){
      1. NESTED spans double count. `model_stream` runs inside `hop:2`; adding
         both inflates the total. Only top-level spans survive.
      2. PARALLEL spans do not add up. Two tools in the same hop run together,
-        so the block costs the slowest, not the sum. Overlapping intervals are
-        merged into one block.
+        so the block costs the slowest, not the sum. Only intervals that truly
+        OVERLAP are merged.
+     Adjacency is deliberately NOT a reason to merge. Spans that merely touch -
+     a tool that ends exactly where the next hop begins, the exact cache
+     followed by the canonical one - are sequential: they do add up, and folding
+     them into one block let the legend describe a tool as running "in parallel"
+     with the hop that was waiting for it. Sequential work is drawn sequentially.
      Whatever gap is left between blocks is real overhead: graph transitions,
      message assembly, the SSE queue. */
   const upto = spans.filter(s => s.start_ms < ft)
@@ -1432,13 +1696,29 @@ function timeline(trace, ttft, doneMs){
   const blocks = [];
   for (const sp of [...top].sort((a,b) => a.start_ms - b.start_ms)){
     const last = blocks[blocks.length - 1];
-    if (last && sp.start_ms <= last.end_ms + 0.5){
+    /* Strictly overlapping, with 0.5 ms of tolerance so that two spans which
+       only touch are not read as concurrent. */
+    if (last && sp.start_ms < last.end_ms - 0.5){
       last.end_ms = Math.max(last.end_ms, sp.end_ms);
       last.members.push(sp);
       if (sp.end_ms - sp.start_ms > last.lead.end_ms - last.lead.start_ms) last.lead = sp;
     } else {
       blocks.push({start_ms:sp.start_ms, end_ms:sp.end_ms, lead:sp, members:[sp]});
     }
+  }
+
+  /* A span another span fully contains adds no wall time, so it does not shape
+     the bar - but it is still work that happened, and leaving it out made two
+     tools fanned out from the same hop look like one. Contained spans rejoin
+     their block as members, with one exception: a sub-phase of its own
+     container. `model_stream` inside its hop is that same call still running,
+     not a second thing running beside it. */
+  const isPhase = (child, parent) => child.name === "model_stream"
+    && (parent.name.startsWith("hop:") || parent.name === "model_ttft");
+  for (const sp of upto){
+    if (top.includes(sp)) continue;
+    const host = blocks.find(b => b.start_ms <= sp.start_ms && b.end_ms >= sp.end_ms);
+    if (host && !host.members.some(m => isPhase(sp, m))) host.members.push(sp);
   }
 
   box.appendChild(el("div","sect-hd",
@@ -1463,8 +1743,13 @@ function timeline(trace, ttft, doneMs){
     }
     const dur = b.end_ms - b.start_ms;
     const [label, color] = spanInfo(b.lead.name);
-    const extra = b.members.length > 1 ? ` +${b.members.length - 1} in parallel` : "";
-    seg(dur, color, `${label}${extra}: ${nf(dur)} ms`);
+    /* Only a block whose members genuinely overlap gets here with more than
+       one member, so "in parallel" is now a claim the geometry supports. The
+       others are named, because "+2 in parallel" hides which two. */
+    const others = b.members.filter(m => m !== b.lead).map(m => spanInfo(m.name)[0]);
+    const extra = others.length ? ` +${others.length} in parallel` : "";
+    seg(dur, color, `${label}${extra}: ${nf(dur)} ms`
+                    + (others.length ? `\nconcurrent: ${others.join(", ")}` : ""));
     keys.appendChild(el("span", null,
       `<s style="background:${color}"></s>${esc(label)}`
       + (extra ? `<em>${esc(extra)}</em>` : "")
@@ -1477,16 +1762,41 @@ function timeline(trace, ttft, doneMs){
     keys.appendChild(el("span", null,
       `<s style="background:var(--line-2)"></s>Orchestration and network<em>${nf(rest)} ms</em>`));
   }
+  /* In a duel the stacked bar has to obey the shared axis too. It is a flex
+     row, so it fills whatever box it is given: left alone, a 1.7 s wait and a
+     3.2 s wait are drawn the same width, one above a waterfall that correctly
+     draws them at half and full. Two charts, one telling the truth, stacked -
+     and the eye believes the big one. Alone the bar keeps the full width:
+     there is nothing beside it to be compared against. */
+  if (axisMax) stack.style.width = Math.max(ft / total * 100, 3).toFixed(2) + "%";
   box.appendChild(stack);
   box.appendChild(keys);
 
-  /* ---- waterfall: every span placed in time ---- */
+  /* ---- waterfall: every span placed in time ----
+     Rows are siblings on the page but not in time: `model_stream` runs INSIDE
+     the hop above it, so the column of durations sums to more than the turn.
+     A reader who adds it up and gets 4,152 ms out of a 3,048 ms turn is right
+     to distrust the chart, so the containment is drawn: a nested row is
+     indented under its parent and says so. */
   const wf = el("div","wf");
   const scale = v => Math.max(0, Math.min(100, (v / total) * 100));
+  const parentOf = sp => spans.reduce((best, o) =>
+    o !== sp && o.start_ms <= sp.start_ms && o.end_ms >= sp.end_ms
+      && o.duration_ms > sp.duration_ms
+      && (!best || o.duration_ms < best.duration_ms) ? o : best, null);
   spans.forEach((sp, k) => {
     const [label, color] = spanInfo(sp.name);
-    const row = el("div","wf-row" + (isTool(sp.name) ? " tool" : ""));
-    row.appendChild(el("div","n", esc(label)));
+    const parent = parentOf(sp);
+    const row = el("div","wf-row" + (isTool(sp.name) ? " tool" : "") + (parent ? " nested" : ""));
+    const nameCell = el("div","n", esc(label));
+    /* In a duel lane the label column is 112px and long names are clipped, so
+       the full one is always one hover away. */
+    nameCell.title = label;
+    if (parent){
+      nameCell.title = `${label} — runs inside "${spanInfo(parent.name)[0]}": its ${ms(sp.duration_ms)} ms `
+                     + `are part of that ${ms(parent.duration_ms)} ms, not extra`;
+    }
+    row.appendChild(nameCell);
     const track = el("div","track");
     const bar = el("b");
     bar.style.left = scale(sp.start_ms) + "%";
@@ -1513,6 +1823,11 @@ function timeline(trace, ttft, doneMs){
       d.appendChild(el("em", over ? "over" : "under",
         `${over ? "+" : "−"}${nf(Math.abs(sp.duration_ms - target))}`));
       d.title = `budget ${nf(target)} ms · measured ${nf(sp.duration_ms)} ms`;
+    } else {
+      /* Silence here was ambiguous: no tick and no delta looked like a pass.
+         The budget describes ONE model round trip, so a second hop has no line
+         to be judged against - which is the finding, not an omission. */
+      d.title = "no budgeted line — see app/budget.py. Not the same as free.";
     }
     row.appendChild(d);
     wf.appendChild(row);
@@ -1520,9 +1835,13 @@ function timeline(trace, ttft, doneMs){
   const axis = el("div","axis");
   axis.appendChild(el("div"));
   const at = el("div");
+  /* One unit for the whole axis. Mixing "762 ms" with "1.5 s" on the same row
+     makes the reader convert before they can compare two ticks. */
+  const inSecs = total >= 1000;
   for (let k = 0; k <= 4; k++){
     const t = total * k / 4;
-    const s = el("span", null, t >= 1000 ? (t/1000).toFixed(1) + " s" : nf(t) + " ms");
+    const s = el("span", null, k === 0 ? "0"
+                 : inSecs ? (t/1000).toFixed(2) + " s" : nf(t) + " ms");
     s.style.left = (k * 25) + "%";
     at.appendChild(s);
   }
@@ -1556,12 +1875,17 @@ function timeline(trace, ttft, doneMs){
        continues while the answer streams, and counting that tail would put the
        share above 100% — a number that would rightly cost the reader's trust. */
     const hopSum = hops.reduce((a,s) => a + Math.max(0, Math.min(s.end_ms, ft) - s.start_ms), 0);
+    /* What was clipped off, stated rather than swallowed: without it the
+       sentence reads as the hops' total cost and disagrees with the rows. */
+    const hopTail = hops.reduce((a,s) => a + Math.max(0, s.end_ms - Math.max(s.start_ms, ft)), 0);
     const share = ft ? Math.min(100, hopSum / ft * 100) : 0;
     box.appendChild(el("div","note",
       `The tools cost at most <b>${ms(slowest)} ms</b> `
       + (tools.length > 1 ? `(the slowest of ${tools.length})` : `(the only one)`)
-      + `; the ${hops.length} model hop${hops.length>1?"s":""} cost <b>${nf(hopSum)} ms</b> — `
-      + `<b>${share.toFixed(0)}%</b> of the wait before the first word. The cost of a tool is `
+      + `; the ${hops.length} model hop${hops.length>1?"s":""} spent <b>${nf(hopSum)} ms</b> `
+      + `before the first word — <b>${share.toFixed(0)}%</b> of that wait`
+      + (hopTail > 1 ? ` (the answering hop then ran on for ${nf(hopTail)} ms more, streaming)` : "")
+      + `. The cost of a tool is `
       + `rarely the tool: it is the hop that decided to call it.`
       + why("doc-agents-hop-cost")));
   }
@@ -1663,7 +1987,7 @@ function exchange(t){
 /* =============================================================
    The measurement card
    ============================================================= */
-function card({trace, ttft, doneMs, chunks, err}){
+function card({trace, ttft, doneMs, chunks, err, axisMax}){
   const t = trace || {};
   const out = t.output_tokens ?? null;
   const streamMs = ttft != null ? doneMs - ttft : null;
@@ -1704,15 +2028,38 @@ function card({trace, ttft, doneMs, chunks, err}){
   };
 
   const ro = el("div","readouts");
-  const cell = (k, v, cls) => ro.appendChild(el("div","ro" + (cls ? " " + cls : ""),
-    `<i>${k}</i><b>${v}</b>`));
+  const cell = (k, v, cls, title) => {
+    const n = ro.appendChild(el("div","ro" + (cls ? " " + cls : ""), `<i>${k}</i><b>${v}</b>`));
+    if (title) n.title = title;
+    return n;
+  };
   cell("first token", (ttft == null ? "—" : `${nf(ttft)}<small> ms</small>`)
        + delta(ttft, base?.ttft), hit ? "hit" : "hero");
   cell("total", `${nf(doneMs)}<small> ms</small>` + delta(doneMs, base?.doneMs));
-  cell("tokens/s", t.tokens_per_s == null ? "—" : nf(t.tokens_per_s, 1), buffered ? "warn" : "");
+  /* Which rate this is, always - not only when the buffering flag fires.
+     Output tokens over MODEL time, so it describes the model. Divide by the
+     stream window instead and a block delivery reports thousands of tok/s;
+     divide by the whole turn and the hop that only picked a tool drags it
+     down. Both are numbers a reader will try, and neither reproduces this one,
+     so the denominator is stated. */
+  cell("tokens/s", t.tokens_per_s == null ? "—" : nf(t.tokens_per_s, 1), buffered ? "warn" : "",
+       t.tokens_per_s == null ? null
+         : `generation rate: ${nf(out)} output tokens over ${nf(t.model_phase_ms)} ms of model `
+           + `time (every hop)`
+           + (t.delivery_tokens_per_s != null
+               ? `.\ndelivery rate, over the ${nf(streamMs)} ms stream window: `
+                 + `${nf(t.delivery_tokens_per_s, 0)} tok/s`
+               : ""));
   cell("output", out == null ? "—" : nf(out));
   cell("input", t.input_tokens == null ? "—"
-      : `${nf(t.input_tokens)}${t.cached_input_tokens ? `<small> +${nf(t.cached_input_tokens)} cached</small>` : ""}`);
+      : `${nf(t.input_tokens)}${t.cached_input_tokens
+            ? `<small class="sub">incl. ${nf(t.cached_input_tokens)} cached</small>` : ""}`,
+      "",
+      t.cached_input_tokens
+        ? `${nf(t.input_tokens)} input tokens, of which ${nf(t.cached_input_tokens)} were read `
+          + `from the provider's prompt cache and billed at the cached rate — `
+          + `${nf(t.input_tokens - t.cached_input_tokens)} were charged in full`
+        : null);
   cell("cost", (cost == null ? "—"
       : (cost === 0 ? `0<small> — cache</small>` : `${cost.toFixed(6)}<small> ${esc(cur)}</small>`))
       + delta(cost, base?.cost, "usd"),
@@ -1731,7 +2078,7 @@ function card({trace, ttft, doneMs, chunks, err}){
   if (t.intent && t.intent !== "unknown") add(`intent <b>${esc(t.intent)}</b>`);
   box.appendChild(strip);
 
-  const tl = timeline(t, ttft, doneMs);
+  const tl = timeline(t, ttft, doneMs, axisMax);
   if (tl) box.appendChild(tl);
 
   /* A cache hit deserves its own sentence: it is the cheapest latency win in

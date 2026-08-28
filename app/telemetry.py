@@ -37,6 +37,7 @@ STAGE_ORDER = [
     "cache_l2_search",
     "locale",
     "intent",
+    "intent_async",
     "retrieval",
     "route",
     "model_ttft",

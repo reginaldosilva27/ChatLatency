@@ -319,7 +319,7 @@ async def scenario_cold(base: str, args) -> list[dict[str, Any]]:
     await post(base, "/v1/cache/reset")
     turns = make_workload(args.requests, seed=args.seed, mix=(0.0, 1.0, 0.0, 0.0), paraphrase_rate=0)
     res = await run_load(
-        base, turns, args.concurrency, overrides={"cache_l1": False, "cache_l2": False}
+        base, turns, args.concurrency, overrides={"cache_l1": False, "cache_canonical": False, "cache_l2": False}
     )
     return [report(res, "pure cache miss · mini route (the reference budget)")]
 
@@ -334,7 +334,7 @@ async def scenario_ab_spec(base: str, args) -> list[dict[str, Any]]:
             base,
             turns,
             args.concurrency,
-            overrides={"speculative_retrieval": spec, "cache_l1": False, "cache_l2": False},
+            overrides={"speculative_retrieval": spec, "cache_l1": False, "cache_canonical": False, "cache_l2": False},
         )
         out.append(report(res, f"speculative retrieval = {spec}"))
     a, b = out
@@ -355,6 +355,12 @@ async def scenario_ab_intent(base: str, args) -> list[dict[str, Any]]:
     A/B measures how much the first token improves when intent leaves the
     critical path (it is still needed for tier routing and for analytics events,
     but it can be asynchronous or heuristic).
+
+    It sends `intent_mode` explicitly rather than relying on the default. Since
+    the heuristic router shipped, the default is `heuristic`, so a scenario that
+    only toggled the old boolean would be comparing "no label" against "a free
+    label" and reporting ~0 ms - a scenario that had quietly stopped measuring
+    its own subject. `ab-router` is the one that measures the replacement.
     """
     out = []
     for use_intent in (True, False):
@@ -365,8 +371,9 @@ async def scenario_ab_intent(base: str, args) -> list[dict[str, Any]]:
             turns,
             args.concurrency,
             overrides={
-                "classify_intent": use_intent,
+                "intent_mode": "llm" if use_intent else "off",
                 "cache_l1": False,
+                "cache_canonical": False,
                 "cache_l2": False,
                 "force_tier": "mini",
             },
@@ -380,6 +387,50 @@ async def scenario_ab_intent(base: str, args) -> list[dict[str, Any]]:
         f"\n[bold]Cost of intent on the critical path:[/] {delta:.0f} ms on the first-token p50."
         f"\n[dim]If tier routing can be heuristic (keyword + question length) and intent becomes"
         f" an asynchronous event, that time leaves what the user waits for.[/]"
+    )
+    return out
+
+
+async def scenario_ab_router(base: str, args) -> list[dict[str, Any]]:
+    """The model as router against a table as router - findings 02, 08 and 11.
+
+    `ab-intent` measures what the classification COSTS. This measures what
+    replacing it BUYS, which is a different question: the label still gets
+    produced, it is just produced locally (`app/routing.py`) instead of by a
+    round trip to a nano deployment.
+
+    Two numbers matter and only one of them is latency. The first-token delta
+    is the finding-02 saving, collected. The second is agreement: run with
+    `intent_mode=async` and every turn carries `intent_agrees`, because a
+    router that is fast and wrong is finding 08 with better timings.
+    """
+    out = []
+    for mode in ("llm", "heuristic"):
+        await post(base, "/v1/cache/reset")
+        turns = make_workload(
+            args.requests, seed=args.seed, mix=(0.0, 1.0, 0.0, 0.0), paraphrase_rate=0
+        )
+        res = await run_load(
+            base,
+            turns,
+            args.concurrency,
+            overrides={
+                "intent_mode": mode,
+                "cache_l1": False,
+                "cache_canonical": False,
+                "cache_l2": False,
+                "force_tier": "mini",
+            },
+        )
+        out.append(report(res, f"intent_mode = {mode}"))
+    llm_run, heuristic_run = out
+    delta = (llm_run["first_token_ms"]["miss"][50] or 0) - (
+        heuristic_run["first_token_ms"]["miss"][50] or 0
+    )
+    console.print(
+        f"\n[bold]Bought by routing locally:[/] {delta:.0f} ms on the first-token p50."
+        f"\n[dim]Latency is the easy half. Run --scenario ab-router with INTENT_MODE=async"
+        f" to collect `intent_agrees` and find out what the speed cost in labels.[/]"
     )
     return out
 
@@ -400,7 +451,7 @@ async def scenario_ab_agentic(base: str, args) -> list[dict[str, Any]]:
                               paraphrase_rate=0)
         res = await run_load(
             base, turns, args.concurrency,
-            overrides={"agentic": agentic, "cache_l1": False, "cache_l2": False},
+            overrides={"agentic": agentic, "cache_l1": False, "cache_canonical": False, "cache_l2": False},
         )
         out.append(report(res, f"agentic = {agentic}"))
     fixed, agent = out
@@ -427,7 +478,7 @@ async def scenario_cache_curve(base: str, args) -> list[dict[str, Any]]:
         await post(base, "/v1/cache/reset")
         turns = make_workload(args.requests, seed=args.seed)
         res = await run_load(
-            base, turns, args.concurrency, overrides={"cache_l1": l1, "cache_l2": l2}
+            base, turns, args.concurrency, overrides={"cache_l1": l1, "cache_canonical": False, "cache_l2": l2}
         )
         out.append(report(res, f"cache: {label}"))
     return out
@@ -445,7 +496,7 @@ async def scenario_tiers(base: str, args) -> list[dict[str, Any]]:
             base,
             turns,
             args.concurrency,
-            overrides={"force_tier": tier, "cache_l1": False, "cache_l2": False},
+            overrides={"force_tier": tier, "cache_l1": False, "cache_canonical": False, "cache_l2": False},
         )
         out.append(report(res, f"forced tier = {tier}"))
     return out
@@ -456,6 +507,7 @@ SCENARIOS = {
     "cold": scenario_cold,
     "ab-spec": scenario_ab_spec,
     "ab-intent": scenario_ab_intent,
+    "ab-router": scenario_ab_router,
     "ab-agentic": scenario_ab_agentic,
     "cache-curve": scenario_cache_curve,
     "tiers": scenario_tiers,

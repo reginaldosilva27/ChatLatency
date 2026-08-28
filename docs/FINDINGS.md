@@ -1,6 +1,6 @@
 # Findings
 
-Nineteen findings that came out of measuring, not of assuming. Most of them hold for any
+Twenty findings that came out of measuring, not of assuming. Most of them hold for any
 stack; findings 09 to 11 are specific to Azure AI Foundry, and 12 to 18 appear once the
 agent gets tools.
 
@@ -43,9 +43,11 @@ into the new domain would turn a measurement into a story.
 | 17 | A tool reported **`ok=True` on an HTTP 403**, and the model truncated its own input to 1,000 chars | a green tool call next to a failed answer is the instrument lying |
 | 18 | The **hop ceiling**, not the model, ends the loop — and it did not appear in the trace | "the tool never got called" was an exhausted budget |
 | 19 | The canonical key needs no threshold: **7/7 adversarial pairs kept apart**, and a paraphrase served in **1.1 ms** | finding 06's way out, implemented — plus two defects it exposed |
+| 20 | A table routes as well as the model here, for **no round trip** — and the prompt was charging a hop the backend did not cost | findings 02, 08, 11 and 15, applied |
 
-Findings 01 to 16 are measurements; 17 to 19 are defects, the first two exposed by the
-payload capture and the last two by building the fix for finding 06. The bug in the Stagehand documentation (`await` on a sync
+Findings 01 to 16 are measurements; 17 to 20 are what happened when the engine was made
+to act on them — 17 and 18 exposed by the payload capture, 19 and 20 by building the fixes
+for 06 and for 02. The bug in the Stagehand documentation (`await` on a sync
 method) is not in the list because it is not about latency — it is recorded in the tools
 section of the README.
 
@@ -116,6 +118,9 @@ Intent is still useful (it routes the tier, it feeds analytics). It just does no
    starts. Analytics loses nothing: the events arrive seconds later.
 2. If it has to be an LLM, run it **in parallel with the start of generation**, not before.
 3. A genuinely nano model reduces it but does not remove it — the floor is the round trip.
+
+> **Resolved.** Option 1 shipped: `INTENT_MODE=heuristic` is the default, and `app/routing.py`
+> produces the label with no network. See [finding 20](#20--a-table-routes-as-well-as-the-model-here).
 
 ```bash
 uv run python -m bench.load --scenario ab-intent --requests 20 --concurrency 4
@@ -263,6 +268,9 @@ imprecise** for routing. As a router, a heuristic is faster *and* more predictab
 **asynchronous analytics event** it remains valuable — there it has time, and an occasional
 error does not change the user's answer.
 
+> **Resolved.** Both halves: the heuristic router cannot make this particular mistake, and
+> `INTENT_MODE=async` is the asynchronous event. Finding 20.
+
 ## 09 · A deployment may simply not stream incrementally
 
 This finding explains the classic *"our agent takes 8 seconds to answer"*, and it is not
@@ -394,6 +402,10 @@ turn — against 400 ms budgeted and 664 ms with a mini model.
 **1,266 ms** of difference — finding 02, amplified. Point `NANO_MODEL` at the cheapest model
 available and keep the large model only on the tier that generates the answer.
 
+> **Resolved**, as far as code can resolve a configuration: `/healthz` publishes
+> `tiers_collapsed` and the server warns at startup when one deployment serves all three
+> tiers. Finding 20.
+
 ## 12 · The tool is never the cost — the hop is
 
 Three questions, three tools, measured end to end:
@@ -441,6 +453,10 @@ tool decision *is* the call. An agent that picks the source heuristically when i
 only falls back to the model when the heuristic cannot decide — has the behaviour of an agent
 with the latency of a fixed pipeline.
 
+> **Implemented, not yet measured.** `SPECULATIVE_TOOLS=true` runs the lookup before hop 1.
+> The saving cannot be measured with the mock provider, which never requests a tool — see
+> the limits in finding 20.
+
 ## 14 · Local RAG solves the problem in finding 04
 
 Finding 04 showed the semantic cache making average latency worse because the remote
@@ -481,6 +497,9 @@ Two ways out, and both are design, not optimisation:
 
 1. **A search backend that returns snippets** (DuckDuckGo, Tavily, Brave and Serper all do)
    lets the agent answer on the second hop. You trade source quality for a whole hop.
+   > **Resolved.** The engine was not acting on this: the prompt and the `web_search` schema
+   > both stated "titles and URLs only" on every backend. They are now conditional on
+   > `has_snippets`. Finding 20.
 2. **Search and Fetch in the same step**: search and open the first result in parallel,
    without consulting the model in between. You pay for a Fetch that may be discarded in
    order not to pay for a hop that is certain.
@@ -611,14 +630,18 @@ hand, are real and measure what they claim to measure.
 
 1. Repeat `ab-intent` and `cache-curve` in the target region and SKU — the two scenarios
    whose conclusions change the architecture.
-2. Implement the **heuristic router** and measure the accuracy loss against the 828 ms.
+2. ~~Implement the **heuristic router**~~ — done, finding 20. What is left is the half that
+   needs traffic: run `INTENT_MODE=async` against a real provider and read `intent_agrees`,
+   which is the accuracy loss this item asked for and the mock cannot supply.
 3. ~~Prototype the **canonical-key cache** `(entity, attribute)` from finding 06~~ — done,
    finding 19. What is left is the recall half: the cue tables miss paraphrases like "how is
    throughput measured", and widening them needs its own safety pass, because a looser cue
    maps a question onto the wrong attribute.
 4. Test the **capacity × buffering hypothesis** from finding 10 by raising a deployment's TPM.
-5. Implement the **hybrid agent** from finding 13: a heuristic picks the tool when it can, and
-   the model decides only when the heuristic cannot.
+5. ~~Implement the **hybrid agent** from finding 13~~ — done as `SPECULATIVE_TOOLS`, finding
+   20, but unmeasured: the mock never asks for a tool, so the hop it saves needs a real
+   provider to show. Either measure it there, or teach the mock to request a tool — which
+   would make finding 13's whole comparison reproducible with no credentials.
 
 ## 17 · A tool reported success while failing, and a model truncated its own input
 
@@ -752,3 +775,110 @@ The rule worth keeping: **a new cache tier needs a correctness gate before it ne
 number.** `tests/test_canonical_cache.py` is that gate — adversarial pairs that must miss,
 paraphrases that must hit, and the known recall gaps pinned, so that editing the cue tables
 shows up here as a diff instead of passing unnoticed.
+
+## 20 · A table routes as well as the model here
+
+Findings 02, 11 and 13 measured the same sequential model round trip three times under three
+names, and finding 13 drew the rule out of them: **count the model round trips that happen
+before the first word.** This is what happened when the engine was made to act on that.
+
+**What the round trip was buying.** The intent label feeds exactly one boolean in the tier
+decision (`n_route`): `intent == "complaint"`. The other three inputs to that decision — a
+forced tier, question length, weak retrieval context — were already local heuristics. So the
+call on the critical path was a network round trip for one boolean, and that is the fact that
+made the fix small rather than clever.
+
+`app/routing.py` produces the label from the tables finding 19 had already built:
+`canonical_key` for the strong case, `detect_metric` for the weak one, plus short cue lists
+for arithmetic, externality and dissatisfaction. It is the heuristic finding 02 itself
+prescribed — entity present, attribute recognised, question length — and two thirds of it
+already existed as tested code.
+
+| `INTENT_MODE` | 1st token p50 | 1st token p95 |
+|---|---|---|
+| `llm` — a nano call on the critical path | 1,389 ms | 1,396 ms |
+| `heuristic` — `app/routing.py`, no network | **1,163 ms** | **1,169 ms** |
+
+**−227 ms p50**, on `LLM_PROVIDER=mock` at `MOCK_TTFT_MS=1000`, `RETRIEVER=stub`, speculative
+retrieval on, 20 requests at concurrency 4 (`--scenario ab-router`).
+
+Two things about that number, and the second is the finding.
+
+It is **not** finding 02's 828 ms, and it is not supposed to be. The mock charges 380 ms for
+a `complete()` call, and speculative retrieval already hides 150 ms of it behind the stub
+index, so 227 ms is the part that was not already overlapped. What transfers is the shape,
+not the magnitude: against a real deployment the same subtraction is worth whatever that
+deployment charges for a round trip, which finding 02 measured at 828 ms and finding 11 at
+1,508–1,667 ms.
+
+And **`ab-intent` (llm against off) returned 227 ms too** — the same number as `ab-router`
+(llm against heuristic), to within a millisecond. That equality is the result worth keeping:
+producing the label locally is indistinguishable, in latency, from not producing one at all.
+The round trip was the whole cost. There was never a computation to speed up.
+
+### What is not settled
+
+**Whether the table routes as *well*, only that it routes as *fast*.** A heuristic misroutes
+more often than a model, and this one will. Three defences, none of which is "it is
+accurate": it reports a confidence, `HIGH` is reserved for the branch where both tables agree
+(a test pins that invariant), and the trace carries `intent_source` so a heuristic label is
+never read as a model's. `INTENT_MODE=async` runs both and records `intent_agrees` — that
+agreement rate is the missing number, and it needs real traffic, not a mock whose classifier
+returns noise.
+
+Finding 08 is the reason this matters more than it sounds. There, the LLM classifier put a
+pure attribute question in the wrong bucket and routed the tier on it. The heuristic cannot
+make that particular mistake — `canonical_key` names that exact shape of question with
+certainty — but it will make others, and a wrong label that announces itself as a guess is a
+different object from a wrong label carrying a model's authority.
+
+### Finding 11, made observable
+
+Finding 11 is not a bug, it is a configuration that looks harmless: one deployment serving all
+three tiers, so `intent` runs on the frontier model at 1,508–1,667 ms. Nothing fails and
+nothing logs. `Settings.tiers_collapsed` now says so at startup and in `/healthz`. It is the
+smallest change here and possibly the highest-yield, because the failure it names is silent
+and the fix is one line of `.env`.
+
+### Finding 15: the prompt was charging a hop the backend did not cost
+
+`web_search` returns titles and URLs with no snippet **on browserbase**. On duckduckgo,
+tavily, brave and serper it returns a summary, and every one of those already reported
+`has_snippets: True` in its meta. The engine was not reading its own flag: both the tool
+schema and the agent's system prompt stated *"returns ONLY titles and URLs"* unconditionally,
+which instructed the model to spend a `web_fetch` hop on content it had already been handed.
+
+That was live on the **keyless duckduckgo fallback** — the path the repository takes when
+someone clones it with no credentials, which is to say the path most readers were on. Both are
+now conditional on the effective backend (after the fallback, not the configured value), and
+`tool_system_prompt` is resolved once at startup so the provider's prompt cache still sees a
+stable prefix.
+
+Unmeasured here for the honest reason: costing it needs a real provider and a question that
+actually reaches the internet. Finding 15 priced the hop it removes at 3,663 ms.
+
+### The two defects building this exposed
+
+**The canonical cache was keying on questions that only mentioned a metric.** The seeded UI
+question —
+
+> "My TTFT is 1800 ms with 2 hops, 60 tokens/s and a 250 token answer. What does dropping one
+> hop save?"
+
+— resolved to `(TPS, measures)`, because "tokens/s" names TPS and "what does" cues `measures`.
+So the canonical cache would have stored a budget calculation under the key for *what tokens
+per second means*, and served each in answer to the other. Finding 07's failure mode, a third
+time, in the tier built to prevent it.
+
+It survived finding 19's correctness gate because every adversarial pair there was a short
+attribute question, and this is a long compound one. `canonical_key` now declines a question
+that names more than one metric, supplies digits of its own, or runs past 14 tokens — the
+same "decline rather than guess" that makes the tier safe at all, applied to a shape the
+first pass did not imagine. The gate has the class now.
+
+**A credential reached a test traceback.** A failing assertion on a `Settings` object printed
+a live OpenAI key into the pytest output, because pydantic renders the whole model. This
+repository is public and that output is a CI log. Every credential field is now
+`Field(repr=False)`; the values still work, they just stop travelling inside error messages.
+Not a latency finding, and recorded here anyway, because the discipline is the same one
+findings 17 and 18 are about: what the instrument emits is part of what the instrument is.

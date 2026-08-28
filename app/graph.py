@@ -41,6 +41,7 @@ from .cache import CacheEntry, LayeredCache, l1_key, lc_key
 from .config import Settings
 from .llm import LLM, StreamOutcome, Tier, Usage
 from .retrieval import Chunk, GlossaryTable, Retriever
+from .routing import heuristic_intent
 from .telemetry import Trace
 from .tools import ToolBox
 
@@ -55,38 +56,64 @@ SYSTEM_PROMPT = (
     "invent a number, a threshold or a benchmark result."
 )
 
-TOOL_SYSTEM_PROMPT = (
-    SYSTEM_PROMPT + " You have tools available, in increasing order of cost: "
-    "metric_lookup (instant) for an exact metric attribute; latency_budget (instant) "
-    "for sizing and before/after arithmetic; kb_search (fast) for the indexed "
-    "documentation; web_search (~1s) only for a subject OUTSIDE that documentation; "
-    "web_fetch (~2s) to read a URL that web_search returned; web_browse (~20s) only if "
-    "web_fetch failed because the page depends on JavaScript. Two more sit outside that "
-    "ladder: summarize (~1s, and it spends tokens of its own) to condense text too long "
-    "to work with, and simulate_tool, which is a stopwatch with no information in it - "
-    "call it only when the user explicitly asks to simulate tool latency or to see two "
-    "tools run in parallel, never to answer a question. "
-    "Always choose the cheapest tool that resolves the question, and request all "
-    "mutually independent tools in the same step. Ground every answer: for an exact "
-    "attribute call metric_lookup, and for a concept, mechanism or trade-off call "
-    "kb_search - do not answer those from memory, even when you are confident. Only "
-    "greetings, meta-questions about this conversation, and arithmetic you can hand to "
-    "latency_budget may skip the tools. "
-    # The hop budget is part of the prompt because it changes what a correct
-    # first move is. Reaching the internet costs TWO hops (web_search returns
-    # titles and URLs only, so web_fetch has to follow) plus a third to answer:
-    # with MAX_TOOL_HOPS=3 a wasted first hop makes the internet unreachable,
-    # and the model then answers "you would need to check the website" - which
-    # reads as a broken tool and is really an exhausted budget.
-    "One more constraint, and it is hard: you get a limited number of steps, and "
-    "reaching the internet costs two of them (web_search returns titles and URLs "
-    "only, so web_fetch must follow) plus one to answer. So when the user asks you "
-    "to search the internet, or asks about something current, external, or about "
-    "another company's product or pricing, call web_search on the FIRST step. Do "
-    "not spend a step on kb_search or metric_lookup first: this documentation only "
-    "covers this engine's own measurements, and looking there for an external "
-    "subject costs the step that would have reached the page."
-)
+def tool_system_prompt(has_snippets: bool = False) -> str:
+    """The agent's system prompt, which depends on what `web_search` returns.
+
+    Built per process rather than per request. `_base_messages` documents why
+    that matters: a system prompt that is stable and first in the payload is
+    the precondition for the provider's own prompt cache, so this may vary with
+    the deployment's configuration but never within it.
+
+    The hop-budget paragraph below was written when the only backend in use
+    returned no snippet, and it stated that as a fact about the tool rather
+    than about the backend. On duckduckgo, tavily, brave and serper it was
+    telling the model to spend a second hop fetching a page whose summary it
+    had already been handed.
+    """
+    reach = (
+        (
+            "One more constraint, and it is hard: you get a limited number of steps. "
+            "web_search returns a snippet with each result, so a search plus an answer "
+            "is two steps and usually enough - call web_fetch only when a snippet is "
+            "not enough and you can afford the extra step. "
+        )
+        if has_snippets
+        else (
+            "One more constraint, and it is hard: you get a limited number of steps, and "
+            "reaching the internet costs two of them (web_search returns titles and URLs "
+            "only, so web_fetch must follow) plus one to answer. "
+        )
+    )
+    return (
+        SYSTEM_PROMPT + " You have tools available, in increasing order of cost: "
+        "metric_lookup (instant) for an exact metric attribute; latency_budget (instant) "
+        "for sizing and before/after arithmetic; kb_search (fast) for the indexed "
+        "documentation; web_search (~1s) only for a subject OUTSIDE that documentation; "
+        "web_fetch (~2s) to read a URL that web_search returned; web_browse (~20s) only if "
+        "web_fetch failed because the page depends on JavaScript. Two more sit outside that "
+        "ladder: summarize (~1s, and it spends tokens of its own) to condense text too long "
+        "to work with, and simulate_tool, which is a stopwatch with no information in it - "
+        "call it only when the user explicitly asks to simulate tool latency or to see two "
+        "tools run in parallel, never to answer a question. "
+        "Always choose the cheapest tool that resolves the question, and request all "
+        "mutually independent tools in the same step. Ground every answer: for an exact "
+        "attribute call metric_lookup, and for a concept, mechanism or trade-off call "
+        "kb_search - do not answer those from memory, even when you are confident. Only "
+        "greetings, meta-questions about this conversation, and arithmetic you can hand to "
+        "latency_budget may skip the tools. "
+        # The hop budget is part of the prompt because it changes what a
+        # correct first move is: with MAX_TOOL_HOPS=3 a wasted first hop can
+        # make the internet unreachable, and the model then answers "you would
+        # need to check the website" - which reads as a broken tool and is
+        # really an exhausted budget (finding 18).
+        + reach
+        + "So when the user asks you to search the internet, or asks about something "
+        "current, external, or about another company's product or pricing, call "
+        "web_search on the FIRST step. Do not spend a step on kb_search or "
+        "metric_lookup first: this documentation only covers this engine's own "
+        "measurements, and looking there for an external subject costs the step "
+        "that would have reached the page."
+    )
 
 INTENT_LABELS = [
     "metric_attribute",
@@ -124,6 +151,8 @@ class AgentState(AgentInput, total=False):
 
     # derived
     intent: str
+    intent_source: str
+    intent_confidence: float
     chunks: list[Chunk]
     tier: Tier
     fixed_fact: str | None
@@ -161,6 +190,13 @@ class AgentRuntime:
         self.table = table
         self.toolbox = toolbox
         self._graphs: dict[tuple, Any] = {}
+        # Resolved once, from the EFFECTIVE search backend (the one after the
+        # fallback to duckduckgo, not the one that was asked for). Per process,
+        # never per request: `_base_messages` explains why a stable system
+        # prompt is the precondition for the provider's prompt cache.
+        self._tool_system_prompt = tool_system_prompt(
+            toolbox.web.has_snippets if toolbox is not None else False
+        )
 
     # ---------------------- cache ----------------------
 
@@ -294,7 +330,9 @@ class AgentRuntime:
         opts = config["configurable"]["opts"]
 
         hop = int(state.get("hop") or 0) + 1
-        messages = list(state.get("messages") or self._base_messages(state, TOOL_SYSTEM_PROMPT))
+        messages = list(
+            state.get("messages") or self._base_messages(state, self._tool_system_prompt)
+        )
         usage: Usage = (state.get("scratch") or {}).get("usage") or Usage()
 
         # On the last hop the tools are withdrawn: without that the model can ask
@@ -396,6 +434,72 @@ class AgentRuntime:
             "scratch": scratch | {"pending": []},
         }
 
+    async def n_prefetch(self, state: AgentState, config) -> dict[str, Any]:
+        """Run the one tool the heuristic is certain about, before hop 1.
+
+        Finding 13 ends with an uncomfortable corollary: the fixed pipeline CAN
+        delete its first model call (finding 02), and the agent loop cannot,
+        because the tool decision *is* the call. The way out it proposes is an
+        agent that picks the source heuristically when it can and falls back to
+        the model when it cannot - the behaviour of an agent with the latency
+        of a fixed pipeline.
+
+        This is that, at its narrowest and safest. When `canonical_key` names
+        both the entity and the attribute - the same certainty the canonical
+        cache requires - the lookup runs here and its answer is in the payload
+        before the model reads it. The model then answers on hop 1 instead of
+        spending hop 1 asking for a tool that costs 0.03 ms.
+
+        Two decisions worth stating, because both could have gone the other way:
+
+        **The result arrives as context, not as a fabricated tool call.** It
+        would work better on the model to append an assistant message with
+        `tool_calls` and a matching `tool` reply - models are trained to trust
+        tool results. It would also put a call the model never made into the
+        transcript the trace captures, and a waterfall showing a decision that
+        did not happen is the instrument lying in the manner of finding 17. So
+        it goes in as a labelled system message and the model can weigh it.
+
+        **The bet only fires at HIGH confidence.** A detected entity with no
+        attribute does not say WHICH lookup to run, so it does not qualify. At
+        HIGH the wrong bet costs one dict access - 0.03 ms, finding 12 - which
+        makes this the most asymmetric wager in the engine.
+        """
+        trace: Trace = config["configurable"]["trace"]
+        if self.toolbox is None:
+            return {}
+
+        pair = self.table.canonical_key(state["question"])
+        if pair is None:
+            return {}
+
+        entity, attribute = pair
+        rec = await self.toolbox.run(
+            "metric_lookup", {"metric": entity, "attribute": attribute}, trace
+        )
+        if not rec.ok:
+            return {}
+
+        # Marked, so the waterfall never shows this as a tool the model asked
+        # for. `hop: 0` places it before the first model round trip.
+        rec.meta = dict(rec.meta) | {"speculative": True}
+        records = [rec.to_dict() | {"hop": 0, "speculative": True}]
+        trace.set(tool_calls=records, speculative_tool=f"{entity}.{attribute}")
+
+        messages = self._base_messages(state, self._tool_system_prompt)
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "A deterministic lookup was run before this turn, because the "
+                    "question named one exact attribute of one known metric:\n"
+                    f"{rec.result or ''}\n"
+                    "Use it if it answers the question; call other tools if it does not."
+                ),
+            }
+        )
+        return {"messages": messages, "tool_records": records}
+
     async def n_tools(self, state: AgentState, config) -> dict[str, Any]:
         """Runs the tools requested by the previous hop concurrently.
 
@@ -455,8 +559,10 @@ class AgentRuntime:
     async def n_intent(self, state: AgentState, config) -> dict[str, Any]:
         trace: Trace = config["configurable"]["trace"]
         opts = config["configurable"]["opts"]
-        if not opts["classify_intent"]:
-            return {"intent": "unknown"}
+        if opts["intent_mode"] != "llm":
+            # The node is only wired into the graph for mode `llm`; this guard
+            # is the belt to that braces.
+            return {}
 
         async with trace.aspan("intent"):
             raw = await self.llm.complete(
@@ -487,12 +593,24 @@ class AgentRuntime:
         the question actually needs it."""
         trace: Trace = config["configurable"]["trace"]
         opts = config["configurable"]["opts"]
+        mode = opts["intent_mode"]
+
         with trace.span("route"):
+            # Where the label comes from, when there is no model call to make
+            # it. This span is pure CPU, so unlike the `intent` span it does
+            # not appear in the critical path as anything measurable.
+            intent = state.get("intent") or ""
+            source = "llm" if intent else "none"
+            confidence: float | None = None
+            if not intent and mode != "off":
+                intent, confidence = heuristic_intent(state["question"], self.table)
+                source = "heuristic"
+            intent = intent or "other"
+
             forced = opts.get("force_tier")
             if forced:
                 tier: Tier = forced
             else:
-                intent = state.get("intent", "other")
                 chunks = state.get("chunks") or []
                 long_question = len(state["question"].split()) > 28
                 weak_context = (not chunks) or (chunks[0].score < 1.0)
@@ -501,7 +619,50 @@ class AgentRuntime:
                     if (intent == "complaint" or long_question or weak_context)
                     else "mini"
                 )
-        return {"tier": tier}
+
+        # A heuristic label and a model's label are not the same datum, and
+        # finding 08 is precisely about trusting the wrong one. The trace says
+        # which produced it, so a number measured with one is never read as the
+        # other.
+        trace.set(intent_source=source, intent_confidence=confidence)
+        # `intent` is only reported when something produced one. With the label
+        # switched off the router still needs a value to compare against, but
+        # publishing that fallback would put "intent: other" in the trace and
+        # in the UI chip, which reads as a classification that happened and
+        # returned nothing useful - rather than as one that never ran.
+        out: dict[str, Any] = {"tier": tier, "intent_source": source}
+        if source != "none":
+            out["intent"] = intent
+
+        # Mode `async`: ask the model anyway, but off the critical path. The
+        # task starts here, immediately before generation, and is awaited in
+        # _finalize - after last_token, when the user already has the whole
+        # answer. Finding 02 said analytics loses nothing by arriving seconds
+        # late; this is that sentence, implemented.
+        #
+        # Awaited rather than abandoned on purpose. A fire-and-forget task
+        # would leave the trace claiming less than the turn actually spent,
+        # and an instrument that under-reports its own cost is the same defect
+        # as one that over-reports it.
+        if mode == "async":
+            out["scratch"] = {
+                "intent_task": asyncio.create_task(self._classify_off_path(state, trace))
+            }
+        return out
+
+    async def _classify_off_path(self, state: AgentState, trace: Trace) -> str:
+        """The LLM label, for analytics only. Never routes anything."""
+        async with trace.aspan("intent_async"):
+            raw = await self.llm.complete(
+                [
+                    {"role": "system", "content": INTENT_PROMPT},
+                    {"role": "user", "content": state["question"]},
+                ],
+                tier="nano",
+                max_tokens=8,
+            )
+        label = (raw or "").strip().lower().strip(".")
+        return label if label in INTENT_LABELS else "other"
 
     async def n_generate(self, state: AgentState, config) -> dict[str, Any]:
         trace: Trace = config["configurable"]["trace"]
@@ -579,6 +740,18 @@ class AgentRuntime:
         trace: Trace = config["configurable"]["trace"]
         opts = config["configurable"]["opts"]
 
+        # The off-path classification, if one was started. Collected here so
+        # the trace is complete, and compared against the heuristic - that
+        # agreement rate is the number that says whether the heuristic can be
+        # trusted as the router, which is the open question finding 08 leaves.
+        task = (state.get("scratch") or {}).get("intent_task")
+        if task is not None:
+            llm_label = await task
+            trace.set(
+                intent_llm=llm_label,
+                intent_agrees=llm_label == state.get("intent"),
+            )
+
         model = self.llm.model_for(state.get("tier") or "mini")
         if usage.output_tokens:
             trace.set(usage_source="provider", **usage.cost(self.s, model))
@@ -619,11 +792,12 @@ class AgentRuntime:
         detect_locale: bool,
         use_intent: bool,
         agentic: bool | None = None,
+        speculative_tools: bool = False,
     ):
         agentic = self.s.agentic if agentic is None else agentic
         if agentic and self.toolbox is None:
             agentic = False
-        key = (speculative, detect_locale, use_intent, agentic)
+        key = (speculative, detect_locale, use_intent, agentic, speculative_tools)
         if key in self._graphs:
             return self._graphs[key]
 
@@ -636,10 +810,20 @@ class AgentRuntime:
         if agentic:
             g.add_node("agent", self.n_agent)
             g.add_node("tools", self.n_tools)
+            # `prefetch` sits between the cache and the first hop, so the model
+            # reads the lookup instead of asking for it (finding 13). It is a
+            # node rather than a branch inside n_agent because it must own a
+            # span: the bet has to be visible in the waterfall whether it paid
+            # off or not.
+            entry = "agent"
+            if speculative_tools:
+                g.add_node("prefetch", self.n_prefetch)
+                g.add_edge("prefetch", "agent")
+                entry = "prefetch"
             g.add_conditional_edges(
                 "cache_lookup",
-                lambda s: "serve_cached" if self._was_a_hit(s) else "agent",
-                ["serve_cached", "agent"],
+                lambda s: "serve_cached" if self._was_a_hit(s) else entry,
+                ["serve_cached", entry],
             )
             g.add_conditional_edges("agent", self._route_after_agent, ["tools", END])
             g.add_edge("tools", "agent")

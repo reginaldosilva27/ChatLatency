@@ -144,6 +144,20 @@ class GlossaryTable:
                         best = (len(needle), metric_id)
         return best[1] if best else None
 
+    def detect_metrics(self, question: str) -> set[str]:
+        """EVERY metric the question names, where `detect_metric` returns only
+        the best one. Used to tell a question about a metric apart from a
+        question that merely mentions several."""
+        padded = f" {' '.join(tokenize(question))} "
+        found: set[str] = set()
+        for metric_id, aliases in _METRIC_ALIASES.items():
+            for alias in (metric_id, *aliases):
+                needle = " ".join(tokenize(alias))
+                if needle and f" {needle} " in padded:
+                    found.add(metric_id)
+                    break
+        return found
+
     async def lookup(self, metric_id: str, attribute: str | None = None) -> dict[str, Any]:
         """Tool-facing lookup: one entry, optionally one attribute.
 
@@ -178,6 +192,48 @@ class GlossaryTable:
             }
         return {"content": json.dumps(entry, ensure_ascii=False), "found": True}
 
+    # An exact-attribute question is short, names one metric, and supplies no
+    # numbers of its own. The ceiling is generous: the longest legitimate
+    # paraphrase in tests/test_canonical_cache.py is 11 tokens.
+    _MAX_ATTRIBUTE_TOKENS = 14
+
+    def _asks_for_one_attribute(self, question: str) -> bool:
+        """Whether the question is shaped like a request for one stored
+        attribute of one metric — as opposed to merely mentioning some.
+
+        This guard exists because of a defect, and the defect is worth keeping
+        in view. `canonical_key` matches an entity anywhere in the question and
+        an attribute cue anywhere else, which is correct for "what unit is TTFT
+        measured in?" and badly wrong for a long compound question that happens
+        to contain both. The seeded UI question
+
+            "My TTFT is 1800 ms with 2 hops, 60 tokens/s and a 250 token
+             answer. What does dropping one hop save?"
+
+        resolved to `(TPS, measures)` — "tokens/s" names TPS, "what does" cues
+        `measures` — so the canonical cache would have served a budget
+        calculation to someone asking what tokens per second means, and the
+        reverse. That is finding 07's failure mode inside the tier built to
+        prevent it, and it survived the first correctness gate because every
+        adversarial pair there was a short attribute question.
+
+        Three signals, each declining rather than guessing:
+
+        - **more than one metric named**: a question about TTFT *and* TPS *and*
+          hops is not a request for one attribute of one of them;
+        - **digits present**: an attribute question asks what a value is; it
+          does not supply values. Numbers mean the user is describing their own
+          system, which is a calculation, not a lookup;
+        - **too long**: finding 02 names question length as part of the
+          heuristic for exactly this reason.
+        """
+        tokens = tokenize(question)
+        if len(tokens) > self._MAX_ATTRIBUTE_TOKENS:
+            return False
+        if any(tok.isdigit() for tok in tokens):
+            return False
+        return len(self.detect_metrics(question)) == 1
+
     def canonical_key(self, question: str) -> tuple[str, str] | None:
         """The `(entity, attribute)` pair a question asks for, or None.
 
@@ -198,6 +254,9 @@ class GlossaryTable:
         they name the same attribute of the same entity, and a table can be
         read. A similarity score cannot.
         """
+        if not self._asks_for_one_attribute(question):
+            return None
+
         entry = self.get(self.detect_metric(question))
         if entry is None:
             return None

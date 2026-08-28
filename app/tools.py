@@ -298,6 +298,13 @@ class WebSearch:
     backend cannot be read as a number for the other.
     """
 
+    # Which backends return a summary alongside the link. Declared once here
+    # and reported per call as `has_snippets` in the meta, because the
+    # difference is not cosmetic: without a snippet the agent has only titles,
+    # so it must spend a model hop deciding which URL to open before it can
+    # read anything (finding 15, 7,123 ms against 3,460 ms).
+    SNIPPET_BACKENDS = frozenset({"duckduckgo", "tavily", "brave", "serper"})
+
     BB_BASE = "https://api.browserbase.com/v1"
     UA = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -329,6 +336,13 @@ class WebSearch:
         if want in keys and not keys[want]:
             return "duckduckgo"
         return want
+
+    @property
+    def has_snippets(self) -> bool:
+        """Whether the EFFECTIVE backend returns snippets - the fallback to
+        duckduckgo changes the answer, and so it must be read from
+        `self.backend` rather than from the configured value."""
+        return self.backend in self.SNIPPET_BACKENDS
 
     @property
     def degraded(self) -> bool:
@@ -743,12 +757,22 @@ class WebSearch:
 # ---------------------------------------------------------------------------
 
 
-def tool_schemas(metric_ids: list[str], enabled: set[str]) -> list[dict[str, Any]]:
+def tool_schemas(
+    metric_ids: list[str], enabled: set[str], has_snippets: bool = False
+) -> list[dict[str, Any]]:
     """Schemas in OpenAI tool-calling format.
 
     The descriptions are written for routing: they say explicitly **when not**
     to use the tool. That is the difference between an agent that calls the
     internet to answer a definition and one that does not.
+
+    `has_snippets` is not decoration. The description of `web_search` used to
+    state unconditionally that the tool returns titles and URLs only - true of
+    browserbase, and false of duckduckgo, tavily, brave and serper, which all
+    return a summary. On those four the engine was instructing the model to
+    spend a hop it did not need, including on the keyless duckduckgo fallback
+    that anyone cloning this repository runs by default. Finding 15 costed that
+    hop at 3,663 ms.
     """
     ids = ", ".join(metric_ids)
     all_tools = {
@@ -887,9 +911,17 @@ def tool_schemas(metric_ids: list[str], enabled: set[str]) -> list[dict[str, Any
             "function": {
                 "name": "web_search",
                 "description": (
-                    "Search the public internet. Returns ONLY titles and URLs - no "
-                    "summary of the content. To read a result, call web_fetch with the "
-                    "URL. Use it only when the question is about something outside the "
+                    (
+                        "Search the public internet. Returns titles, URLs and a short "
+                        "snippet of each result. When the snippets already answer the "
+                        "question, answer from them - only call web_fetch when you "
+                        "need more of a page than the snippet gives. "
+                        if has_snippets
+                        else "Search the public internet. Returns ONLY titles and URLs - "
+                        "no summary of the content. To read a result, call web_fetch "
+                        "with the URL. "
+                    )
+                    + "Use it only when the question is about something outside the "
                     "indexed documentation (news, a specific vendor, a current "
                     "benchmark). Never use it for a concept that is documented "
                     "internally or for a metric attribute."
@@ -1081,7 +1113,7 @@ class ToolBox:
         return set(self.s.enabled_tools_list)
 
     def schemas(self) -> list[dict[str, Any]]:
-        return tool_schemas(self.table.ids(), self.enabled)
+        return tool_schemas(self.table.ids(), self.enabled, self.web.has_snippets)
 
     async def _dispatch(self, name: str, args: dict[str, Any]) -> ToolResult:
         if name == "kb_search":

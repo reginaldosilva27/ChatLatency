@@ -62,6 +62,8 @@ class ChatRequest(BaseModel):
     speculative_retrieval: bool | None = None
     detect_locale: bool | None = None
     classify_intent: bool | None = None
+    intent_mode: Literal["llm", "heuristic", "async", "off"] | None = None
+    speculative_tools: bool | None = None
     cache_l1: bool | None = None
     cache_canonical: bool | None = None
     cache_l2: bool | None = None
@@ -142,6 +144,19 @@ def build_app() -> FastAPI:
         else:
             logger.info("internet search via '%s'", web.backend)
 
+        # Finding 11: the cheap tiers billed and timed at the expensive tier's
+        # rate. It is a legitimate way to run - one deployment is what most
+        # people have - but it is invisible, and the only symptom is a first
+        # token 1,266 ms later than it needed to be.
+        if settings.tiers_collapsed:
+            logger.warning(
+                "all three tiers point at '%s'. Intent classification and other "
+                "nano-tier jobs run on the frontier model: finding 11 measured "
+                "1,508-1,667 ms for that call against 400 ms budgeted. Point "
+                "NANO_MODEL at the cheapest deployment you have.",
+                settings.tier_model("nano"),
+            )
+
         app.state.rt = AgentRuntime(settings, llm, cache, retriever, table, toolbox)
         app.state.cache = cache
         app.state.buffer = buffer
@@ -151,11 +166,20 @@ def build_app() -> FastAPI:
         app.state.corpus = corpus
         # pre-compile the variants used in the A/B so the first request does not
         # pay for graph compilation
+        # Both intent shapes are pre-compiled, not just the configured one: the
+        # A/B between `llm` and `heuristic` is a per-request override, so the
+        # variant that is NOT the default is exactly the one a comparison run
+        # would otherwise pay compilation for on its first request.
         for agentic in (True, False):
             for spec in (True, False):
-                app.state.rt.graph(
-                    spec, settings.detect_locale, settings.classify_intent, agentic
-                )
+                for llm_intent in (True, False):
+                    app.state.rt.graph(
+                        spec,
+                        settings.detect_locale,
+                        llm_intent,
+                        agentic,
+                        settings.speculative_tools,
+                    )
         # warm the encoder (the first get_encoding may download the BPE file) so
         # the first measured request does not carry that cost
         await asyncio.to_thread(warm_tokenizer)
@@ -183,7 +207,14 @@ def build_app() -> FastAPI:
         return {
             "speculative": pick(req.speculative_retrieval, settings.speculative_retrieval),
             "detect_locale": pick(req.detect_locale, settings.detect_locale),
-            "classify_intent": pick(req.classify_intent, settings.classify_intent),
+            # `classify_intent=False` still forces the mode off, so the older
+            # per-request field and the bench scenario that uses it keep working.
+            "intent_mode": (
+                "off"
+                if req.classify_intent is False
+                else pick(req.intent_mode, settings.effective_intent_mode)
+            ),
+            "speculative_tools": pick(req.speculative_tools, settings.speculative_tools),
             "cache_l1": pick(req.cache_l1, settings.cache_l1_enabled),
             "cache_canonical": pick(req.cache_canonical, settings.cache_canonical_enabled),
             "cache_l2": pick(req.cache_l2, settings.cache_l2_enabled),
@@ -197,8 +228,11 @@ def build_app() -> FastAPI:
         graph = rt.graph(
             opts["speculative"],
             opts["detect_locale"],
-            opts["classify_intent"],
+            # Only mode `llm` puts a node in the graph. `heuristic` and `async`
+            # produce the label inside n_route, where it costs no round trip.
+            opts["intent_mode"] == "llm",
             opts["agentic"],
+            opts["speculative_tools"],
         )
         state = {
             "question": req.question,
@@ -413,6 +447,8 @@ def build_app() -> FastAPI:
                 "frontier": settings.tier_model("frontier"),
             },
             "reasoning_effort": settings.reasoning_effort,
+            # Finding 11, made observable: nano jobs on a frontier deployment.
+            "tiers_collapsed": settings.tiers_collapsed,
             "endpoint": settings.foundry_base_url
             if settings.llm_provider == "foundry"
             else settings.azure_openai_endpoint,
@@ -444,7 +480,8 @@ def build_app() -> FastAPI:
             "price": _price_health(settings),
             "levers": {
                 "detect_locale": settings.detect_locale,
-                "classify_intent": settings.classify_intent,
+                "intent_mode": settings.effective_intent_mode,
+                "speculative_tools": settings.speculative_tools,
                 "speculative_retrieval": settings.speculative_retrieval,
                 "cache_l1": settings.cache_l1_enabled,
                 "cache_canonical": settings.cache_canonical_enabled,
