@@ -32,6 +32,8 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
+from app.budget import BUDGET
+
 from .workload import USER_CONTEXT, Turn, make_workload
 
 console = Console()
@@ -147,18 +149,9 @@ def fmt(v: float | None) -> str:
     return "—" if v is None else f"{v:,.0f}".replace(",", ".")
 
 
-# The reference budget for a streaming RAG agent, in ms.
-# Adjust it to your project's target - it is what the report compares against.
-BUDGET = {
-    "gateway": 40,
-    "intent": 400,
-    "retrieval": 150,
-    "model_ttft": 1050,
-    "first_token": 1600,
-    "first_token_p95": 3000,
-    "cache_hit": 300,
-    "complete": 3000,
-}
+# The reference budget lives in app/budget.py and is served to the UI at
+# /v1/budget. Declared once: the number the bench compares against and the
+# number the waterfall draws are the same promise, or the comparison is theatre.
 
 
 def report(results: list[Result], label: str) -> dict[str, Any]:

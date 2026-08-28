@@ -135,10 +135,27 @@ no session store — closing the tab is the delete button.
 
 ---
 
-## Four experiments, in about ten minutes
+## Five experiments, in about ten minutes
 
-The UI is seeded with four questions, one per latency path. Run them in order and the
-findings reproduce themselves.
+**They are built into the interface.** Click **Lab** in the header: each experiment states a
+claim, runs the turns that test it, and reports whether the numbers agreed — computed from
+that run, never asserted. Its overrides are per request, so an experiment can run with the
+agent loop off without leaving your configuration changed.
+
+An experiment is allowed to fail and say so. One that could only confirm would be the
+flattering instrument finding 17 is about.
+
+Real output from the Lab on a laptop:
+
+```
+The floor            the claim held — 2nd turn: 11 ms from cache against
+                     1,976 ms live — 176x faster, 35 tokens.
+Two tools, one step  the claim held — Sum of the tools: 3,002 ms. Wall time
+                     of the step: 1,501 ms. The step cost the slowest one,
+                     and 1,501 ms never happened.
+```
+
+The prose below walks the same ground by hand, for anyone who would rather drive.
 
 ### 1. The floor: ask the same thing twice
 
@@ -196,7 +213,47 @@ On the resource these findings came from, that probe separated five deployments 
 from one that does not - and the one that does not was the newest model, at the lowest TPM.
 See [finding 10](docs/FINDINGS.md).
 
+### 5. The overlap: two tools in one step
+
+Ask for two simulated tools at once — *"simulate two tools running at the same time, both
+1500 ms"* — and read the waterfall. Two bars, same start, same end. The sum of the tools is
+3,000 ms; the step cost 1,500 ms.
+
+This is the one experiment that needs no credential of any kind, which is why it exists:
+`simulate_tool` waits exactly as long as you ask and returns nothing. Change one of them to
+4,000 ms and the step becomes 4,000 ms — the step always costs the slowest tool, never the
+sum, and never less than the slowest.
+
+The corollary is the part people get wrong: **parallelising tools does not help if they were
+never the cost.** Run experiment 2 and 5 back to back and the point makes itself — 142 ms of
+tool time against 4,772 ms of model hops.
+
 ---
+
+### The budget, drawn on the bar it judges
+
+`app/budget.py` declares what each slice is *supposed* to cost — ~400 ms for intent, ~150 ms
+for retrieval, ~1,050 ms of prefill, 1,600 ms to the first token at p50. The bench compares
+against it and the waterfall now draws it: a dashed tick where the promise ended, and the
+overrun in red beside the measured number. One declaration, imported by both, because a
+target that exists in two places is a target that drifts.
+
+That is the difference between a chart that says *where the time went* and one that says
+*where it went over* — and only the second is something you can act on.
+
+### Pin a baseline
+
+Any turn can be pinned. Every turn after it shows its difference — on the first token, the
+total, the cost, and span by span:
+
+```
+Against the pinned baseline, span by span: Hop 1 — model decides +3,204 ms,
+Write the answer +783 ms, Hop 2 — model answers +393 ms.
+```
+
+Comparing two configurations used to mean remembering four numbers from a card that had
+scrolled away. This is the difference between "the toggle changed something" and "the toggle
+cost me 1.2 seconds".
 
 ## The concepts, briefly
 
@@ -300,20 +357,36 @@ Both live in the same process on purpose. Comparing them is the most useful meas
 the fixed pipeline makes **one** round trip to the model, the agent loop makes at least
 **two** whenever it uses a tool, and the whole difference lands on the first word.
 
-### The six tools, chosen for their latency profiles
+### The tools, chosen for their latency profiles
 
-| tool | what it does | where it runs | latency |
-|---|---|---|---|
-| `metric_lookup` | an exact attribute of a metric | in-memory dict | **0.03–0.08 ms** |
-| `latency_budget` | turns TTFT / rate / hops into a felt experience | pure arithmetic | **~0.01 ms** |
-| `kb_search` | RAG over the indexed docs | **ChromaDB + in-process ONNX** | **23–45 ms** |
-| `web_search` | internet search | **Browserbase Search** | **283–324 ms** |
-| `web_fetch` | reads a URL as markdown | **Browserbase Fetch** | **430–730 ms** |
-| `web_browse` | a real browser, with JavaScript | **Stagehand** — opt-in | **12.3 s** |
+| tool | what it does | where it runs | latency | key? |
+|---|---|---|---|---|
+| `metric_lookup` | an exact attribute of a metric | in-memory dict | **0.03–0.08 ms** | no |
+| `latency_budget` | turns TTFT / rate / hops into a felt experience | pure arithmetic | **~0.01 ms** | no |
+| `kb_search` | RAG over the indexed docs | **ChromaDB + in-process ONNX** | **23–45 ms** | no |
+| `simulate_tool` | waits exactly as long as you ask | `asyncio.sleep` | **you choose** | no |
+| `summarize` | condenses text — by calling a model **inside the tool** | your nano tier | **~1–3 s + tokens** | no |
+| `web_search` | internet search | **Browserbase Search** | **283–1,062 ms** | yes¹ |
+| `web_fetch` | reads a URL as markdown | **Browserbase Fetch** | **430–1,978 ms** | yes |
+| `web_browse` | a real browser, with JavaScript | **Stagehand** — opt-in | **12.3 s** | yes |
+
+¹ falls back to DuckDuckGo without one, and the trace records the **effective** backend.
 
 Six orders of magnitude between the fastest and the slowest. That spread is the point: it is
 what makes the waterfall teach something. Tools requested in the same hop run **concurrently**,
 so the step costs the slowest one rather than the sum — and the waterfall shows the overlap.
+
+Two of them exist to teach rather than to fetch, and both work on a fresh clone with no
+account anywhere:
+
+- **`simulate_tool`** is a stopwatch with no information in it. Ask for two 1,500 ms tools in
+  one step and the waterfall draws **one** 1,500 ms block, not two — the parallelism lesson,
+  measured, with nothing to sign up for. It is a declared simulator, flagged `simulated: true`
+  in the trace, in the same family as `LLM_PROVIDER=mock` and `RETRIEVER=stub`.
+- **`summarize`** runs the nano model *inside itself* and reports its own `usage`. It
+  reproduces finding 16 — a tool with a model inside spends tokens the turn's counter never
+  sees — for the price of one nano call instead of a 12-second browser session. Measured on a
+  real turn: 104 in / 54 out and $0.000128 that the turn's total does not contain.
 
 `web_browse` is the only tool that opens a browser session, and it is off at three levels: out
 of `ENABLED_TOOLS`, behind `ENABLE_WEB_BROWSE=false`, and with the package as an optional

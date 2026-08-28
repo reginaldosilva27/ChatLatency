@@ -118,7 +118,13 @@ class Settings(BaseSettings):
     # latency_budget  pure arithmetic                            ~0.01 ms
     # web_search      Browserbase Search - internet search        ~1000 ms
     # web_fetch       Browserbase Fetch - page as markdown        ~1000-3000 ms
-    enabled_tools: str = "kb_search,metric_lookup,latency_budget,web_search,web_fetch"
+    # simulate_tool is in the default list on purpose: it is the only slow tool
+    # that needs no credential, so the hop and parallelism lessons are
+    # reproducible on a fresh clone. It is a declared simulator and says so in
+    # the trace (`simulated: true`).
+    enabled_tools: str = (
+        "kb_search,metric_lookup,latency_budget,simulate_tool,summarize,web_search,web_fetch"
+    )
 
     # Dedicated flag for the only tool that opens a browser session.
     # Deliberately outside the default: 12 s per call, it creates a Browserbase

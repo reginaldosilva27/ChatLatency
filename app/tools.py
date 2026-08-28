@@ -36,6 +36,7 @@ from typing import Any
 import httpx
 
 from .config import Settings
+from .llm import Usage
 from .pricing import get_price_book
 from .retrieval import GlossaryTable
 from .telemetry import Trace, clip
@@ -830,6 +831,57 @@ def tool_schemas(metric_ids: list[str], enabled: set[str]) -> list[dict[str, Any
                 },
             },
         },
+        "simulate_tool": {
+            "type": "function",
+            "function": {
+                "name": "simulate_tool",
+                "description": (
+                    "A stopwatch, not a data source: it waits for the number of "
+                    "milliseconds you give it and returns nothing useful. Call it ONLY "
+                    "when the user explicitly asks to simulate a slow tool, to see what N "
+                    "milliseconds of tool time does to the timeline, or to demonstrate "
+                    "that tools requested together run in parallel. Never call it to "
+                    "answer a question - it has no information in it."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "ms": {
+                            "type": "number",
+                            "description": "Milliseconds to wait. Capped at 30000.",
+                        },
+                        "label": {
+                            "type": "string",
+                            "description": "Name shown on the bar, e.g. 'remote index'.",
+                        },
+                    },
+                    "required": ["ms"],
+                },
+            },
+        },
+        "summarize": {
+            "type": "function",
+            "function": {
+                "name": "summarize",
+                "description": (
+                    "Condense a long text into a few sentences. It runs a model of its "
+                    "own, so it costs tokens and roughly a second - use it only when you "
+                    "are holding text too long to work with directly, such as the output "
+                    "of web_fetch."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "The text to condense."},
+                        "sentences": {
+                            "type": "integer",
+                            "description": "Maximum sentences (1-5). Default 2.",
+                        },
+                    },
+                    "required": ["text"],
+                },
+            },
+        },
         "web_search": {
             "type": "function",
             "function": {
@@ -912,6 +964,101 @@ def tool_schemas(metric_ids: list[str], enabled: set[str]) -> list[dict[str, Any
     return [v for k, v in all_tools.items() if k in enabled]
 
 
+# ---------------------------------------------------------------------------
+# 4. Two teaching tools: one that costs exactly what you ask, one that
+#    quietly spends tokens
+# ---------------------------------------------------------------------------
+
+
+async def simulate_tool(ms: float, label: str = "simulated work") -> ToolResult:
+    """A tool that takes exactly as long as you tell it to.
+
+    Every topology lesson in this repository - a hop costs the whole hop, tools
+    in the same step run concurrently so the step costs the slowest one, the
+    first token waits for all of it - is currently only reproducible with a
+    Browserbase key, because the slow tools are the ones that touch the
+    internet. That is a bad property for an open-source teaching project: the
+    most interesting lessons sit behind a paid credential.
+
+    This is a declared simulator, in the same family as `LLM_PROVIDER=mock` and
+    `RETRIEVER=stub` - both of which this repository already trusts enough to
+    validate its own instrumentation against (finding 01, accurate to 1 ms). It
+    is labelled `simulated: true` in the trace so no measurement taken with it
+    can be mistaken for a measurement of something real.
+
+    Ask for 3,000 ms and watch the first token move by 3,000 ms. Ask for two of
+    them in one step and watch the waterfall draw ONE bar, not two - which is
+    the parallelism lesson, at zero cost, with no account anywhere.
+    """
+    ms = max(0.0, min(float(ms), 30_000.0))
+    await asyncio.sleep(ms / 1000.0)
+    return ToolResult(
+        content=(
+            f"Simulated {ms:.0f} ms of work labelled '{label}'. This tool did nothing "
+            f"except wait: the number in the timeline is the number that was requested."
+        ),
+        meta={"simulated": True, "requested_ms": ms, "label": label},
+    )
+
+
+class Summarizer:
+    """A tool with a model inside it - the cost that does not show up.
+
+    Finding 16 is one of the sharpest in the set: a tool that calls an LLM
+    spends tokens that never reach the turn's `usage`, so cost per interaction
+    becomes fiction. It was found through Stagehand, which costs 12 seconds, an
+    optional dependency and a Browserbase account to reproduce.
+
+    This reproduces it with the model already configured. It returns its own
+    `usage` in the meta - `llm_input_tokens`, `llm_output_tokens`, `llm_cost`,
+    `llm_inference_ms` - which is exactly what finding 16 says every tool with a
+    model inside must do, and what makes the card state that there is cost
+    outside the total.
+    """
+
+    def __init__(self, settings: Settings, llm: Any) -> None:
+        self.s = settings
+        self.llm = llm
+
+    async def run(self, text: str, sentences: int = 2) -> ToolResult:
+        if self.llm is None:
+            return ToolResult(
+                content="summarize is unavailable: no model client.",
+                error="no_llm",
+            )
+        n = max(1, min(int(sentences), 5))
+        usage = Usage()
+        t0 = time.perf_counter()
+        out = await self.llm.complete_full(
+            [
+                {
+                    "role": "system",
+                    "content": f"Summarise the text in at most {n} sentences. No preamble.",
+                },
+                {"role": "user", "content": text[:6000]},
+            ],
+            tier="nano",
+            max_tokens=200,
+            usage_out=usage,
+        )
+        inference_ms = (time.perf_counter() - t0) * 1000.0
+        cost = usage.cost(self.s, usage.model or None)
+        return ToolResult(
+            content=out,
+            meta={
+                # The names the trace and the UI already look for: a tool that
+                # spends tokens has to report them in the shape the instrument
+                # reads, or it is spending them invisibly all the same.
+                "llm_input_tokens": usage.input_tokens,
+                "llm_output_tokens": usage.output_tokens,
+                "llm_inference_ms": round(inference_ms, 2),
+                "llm_cost": cost["cost_total"],
+                "llm_model": usage.model,
+                "llm_price_origin": cost["price_origin"],
+            },
+        )
+
+
 class ToolBox:
     """Runs tools by name, timing each one into the trace."""
 
@@ -921,11 +1068,13 @@ class ToolBox:
         kb: KnowledgeBase,
         table: GlossaryTable,
         web: WebSearch,
+        llm: Any = None,
     ) -> None:
         self.s = settings
         self.kb = kb
         self.table = table
         self.web = web
+        self.summarizer = Summarizer(settings, llm)
 
     @property
     def enabled(self) -> set[str]:
@@ -952,6 +1101,14 @@ class ToolBox:
                 int(args.get("output_tokens") or 0),
                 float(args.get("tokens_per_second") or 0),
                 int(args.get("hops") or 1),
+            )
+        if name == "simulate_tool":
+            return await simulate_tool(
+                float(args.get("ms") or 0), str(args.get("label") or "simulated work")
+            )
+        if name == "summarize":
+            return await self.summarizer.run(
+                str(args.get("text") or ""), int(args.get("sentences") or 2)
             )
         if name == "web_search":
             return await self.web.search(args.get("query", ""), int(args.get("top_k") or 3))

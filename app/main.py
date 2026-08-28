@@ -21,11 +21,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from .budget import BUDGET, SPAN_BUDGET
 from .cache import LayeredCache
 from .config import get_settings
 from .graph import SENTINEL_DONE, AgentRuntime, warm_tokenizer
@@ -126,7 +127,7 @@ def build_app() -> FastAPI:
         toolbox: ToolBox | None = None
         if settings.enabled_tools_list:
             await asyncio.to_thread(kb.build, corpus["documents"])
-            toolbox = ToolBox(settings, kb, table, web)
+            toolbox = ToolBox(settings, kb, table, web, llm)
 
         # A degraded search backend is too quiet to discover only at /healthz: a
         # number measured with duckduckgo does not hold for browserbase.
@@ -370,6 +371,30 @@ def build_app() -> FastAPI:
                 for d in docs
             ],
         }
+
+    @app.get("/v1/budget")
+    async def budget() -> dict[str, Any]:
+        """The per-span targets the waterfall draws and the bench compares to.
+
+        Served rather than duplicated in the browser so there is exactly one
+        declaration of what "on budget" means in this repository.
+        """
+        return {"targets_ms": BUDGET, "spans": SPAN_BUDGET}
+
+    @app.get("/v1/corpus/doc/{doc_id}")
+    async def corpus_doc(doc_id: str) -> dict[str, Any]:
+        """One indexed document, in full.
+
+        Every lesson the trace states - the hop cost, the buffering warning, the
+        cache floor - has a document in the corpus that explains it. The card
+        links here, so the measurement and the concept meet at the moment the
+        reader is curious instead of in a docs folder they will not open.
+        """
+        corpus: dict[str, Any] = getattr(app.state, "corpus", None) or load_corpus()
+        for d in corpus.get("documents", []):
+            if d.get("id") == doc_id:
+                return d
+        raise HTTPException(status_code=404, detail=f"no document {doc_id!r}")
 
     @app.post("/v1/cache/invalidate")
     async def cache_invalidate(topic: str) -> dict[str, Any]:

@@ -277,6 +277,62 @@ main{flex:1;display:flex;flex-direction:column;gap:26px;padding-bottom:26px}
 .axis div{position:relative;height:14px}
 .axis span{position:absolute;top:0;font:400 9.5px/1 var(--mono);color:var(--faint);
            transform:translateX(-50%);white-space:nowrap}
+/* The budget, drawn on the bar it judges. A dashed tick where the promise
+   ended; anything to the right of it is the overrun. */
+.track u{position:absolute;top:0;bottom:0;width:0;border-left:1px dashed var(--faint);
+         z-index:2;text-decoration:none}
+.wf-row .d em{display:block;font-style:normal;color:var(--faint);margin-top:3px;
+              font-size:10.5px}
+.wf-row .d em.over{color:var(--coral)}
+.wf-row .d em.under{color:var(--mint)}
+
+/* "why?" - the measurement links to the document that explains it. */
+.why{background:none;border:0;padding:0;margin-left:6px;cursor:pointer;
+     font:500 11.5px/1 var(--sans);color:var(--amber);opacity:.75}
+.why:hover{opacity:1;text-decoration:underline}
+.drawer.doc .drawer-body{font-size:13.5px;line-height:1.65;color:var(--muted)}
+.drawer.doc .drawer-body p{margin:0 0 14px}
+.drawer.doc .meta{font:400 10.5px/1.6 var(--mono);color:var(--faint);
+                  padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid var(--line)}
+
+/* The pin, and the deltas it produces. */
+.pin{background:none;border:1px solid var(--line-2);border-radius:7px;padding:4px 9px;
+     font:500 9.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;
+     color:var(--faint);cursor:pointer;transition:.16s ease}
+.pin:hover{border-color:var(--amber);color:var(--amber)}
+.ro b u{display:block;text-decoration:none;margin-top:5px;
+        font:500 10.5px/1 var(--mono);letter-spacing:0}
+.ro b u.down{color:var(--mint)} .ro b u.up{color:var(--coral)}
+.ro b u.same{color:var(--faint)}
+
+/* ---------- the Lab ---------- */
+.lab-intro{margin:6px 0 4px;font-size:12.5px;line-height:1.55;color:var(--muted)}
+.exp{padding:18px 0;border-bottom:1px solid var(--line)}
+.exp:last-child{border-bottom:0}
+.exp h4{margin:0 0 6px;font:600 14px/1.2 var(--sans);letter-spacing:-.01em;color:var(--ink)}
+.exp .claim{margin:0 0 8px;font-size:13px;line-height:1.5;color:var(--ink-2)}
+.exp .how{margin:0 0 8px;font-size:12.5px;line-height:1.5;color:var(--muted)}
+.exp .expect{margin:0 0 12px;font:400 11.5px/1.5 var(--mono);color:var(--faint)}
+.exp .expect i{font-style:normal;letter-spacing:.14em;text-transform:uppercase;
+               color:var(--amber);margin-right:6px;font-size:9px}
+
+/* The verdict card: a claim, and whether this run agreed with it. */
+.verdict{align-self:stretch;padding:16px 18px;border-radius:var(--radius);
+         background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow);
+         animation:rise .34s cubic-bezier(.2,.8,.2,1) both}
+.verdict h4{margin:0 0 6px;font:500 9.5px/1 var(--mono);letter-spacing:.18em;
+            text-transform:uppercase;color:var(--muted)}
+.verdict .claim{margin:0 0 10px;font:600 15px/1.4 var(--sans);letter-spacing:-.012em;
+                color:var(--ink)}
+.verdict .status{margin:0;font-size:13px;line-height:1.55;color:var(--muted)}
+.verdict .status b{color:var(--ink-2)}
+.verdict.running{border-color:var(--line-2)}
+.verdict.running .status{color:var(--amber)}
+.verdict.held{border-left:2px solid var(--mint)}
+.verdict.held .status b:first-child{color:var(--mint)}
+.verdict.failed{border-left:2px solid var(--coral)}
+.verdict.failed .status b:first-child{color:var(--coral)}
+
 .note{margin-top:14px;font-size:13px;line-height:1.5;color:var(--muted)}
 .note b{color:var(--ink-2);font-weight:600}
 .note.flag{color:var(--amber)}
@@ -456,6 +512,14 @@ input:focus-visible + .sw{outline:2px solid var(--amber);outline-offset:2px}
           <circle cx="12" cy="12" r="8"/><path d="M12 4v16" /><path d="M12 4a8 8 0 0 1 0 16" fill="currentColor" stroke="none"/>
         </svg>
       </button>
+      <button class="btn" id="labBtn" title="Guided experiments" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 3h6M10 3v6.2L5.2 18A2 2 0 0 0 7 21h10a2 2 0 0 0 1.8-3L14 9.2V3"/>
+          <path d="M7.6 15h8.8"/>
+        </svg>
+        Lab
+      </button>
       <button class="btn" id="newChat" title="Start a new conversation">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
              stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
@@ -495,6 +559,28 @@ input:focus-visible + .sw{outline:2px solid var(--amber);outline-offset:2px}
 </div>
 
 <div class="scrim" id="scrim"></div>
+
+<aside class="drawer lab" id="labPanel" role="dialog" aria-modal="true" aria-label="Lab">
+  <div class="drawer-hd">
+    <h2>The Lab</h2>
+    <button class="btn icon" id="labClose" aria-label="Close">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+  </div>
+  <div class="drawer-body" id="labBody"></div>
+</aside>
+
+<aside class="drawer doc" id="docPanel" role="dialog" aria-modal="true" aria-label="Concept">
+  <div class="drawer-hd">
+    <h2 id="docTitle">Concept</h2>
+    <button class="btn icon" id="docClose" aria-label="Close">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+  </div>
+  <div class="drawer-body" id="docBody"></div>
+</aside>
 
 <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Configuration">
   <div class="drawer-hd">
@@ -681,15 +767,268 @@ TOGGLES.forEach(k => {
 });
 $("cfg-api").onchange = e => { CFG.api = e.target.value.trim(); save(); syncDrawer(); readEnv(); };
 
+/* =============================================================
+   The Lab
+   The README has had "four experiments, in about ten minutes" since the first
+   commit, and the interface never knew they existed - so a visitor met a chat
+   box with no idea what to do with it. Each experiment states a CLAIM, runs the
+   turns that test it, and reports whether the claim held.
+
+   The verdict is computed from this run's numbers, never asserted. An
+   experiment that can only confirm is the flattering instrument finding 17
+   warns about, so `check` is allowed to return false and say so.
+   ============================================================= */
+const LAB = [
+  {
+    id: "floor",
+    name: "The floor",
+    claim: "An exact cache answers in ~10 ms — 30× under the usual 300 ms target.",
+    how: "Asks the same question twice. The second turn should never reach the model.",
+    expect: "2nd turn under 300 ms, zero tokens, zero cost.",
+    doc: "doc-cache-exact",
+    steps: [
+      {q: "What unit is TTFT measured in, and what is a good target?", override: {cache_l1: true}},
+      {q: "What unit is TTFT measured in, and what is a good target?", override: {cache_l1: true}}
+    ],
+    check: r => {
+      const [a, b] = r;
+      const hit = b?.trace?.cache_tier === "l1" || b?.trace?.cache_tier === "l2";
+      const t = b?.ttft ?? b?.doneMs;
+      return {
+        ok: hit && t < 300,
+        line: hit
+          ? `2nd turn: <b>${nf(t)} ms</b> from cache against <b>${nf(a?.ttft)} ms</b> live — `
+            + `<b>${(a?.ttft / Math.max(t,1)).toFixed(0)}×</b> faster, ${nf(b?.trace?.output_tokens || 0)} tokens.`
+          : `The 2nd turn did not hit the cache (tier: ${esc(b?.trace?.cache_tier || "?")}). `
+            + `Exact caching only fires on a normalised repeat — check that L1 is on.`
+      };
+    }
+  },
+  {
+    id: "parallel",
+    name: "Two tools, one step",
+    claim: "Tools requested in the same step run concurrently: the step costs the slowest, not the sum.",
+    how: "Asks for two simulated 1,500 ms tools in one step. No credentials involved.",
+    expect: "Two bars starting together; ~1,500 ms of tool time, not 3,000.",
+    doc: "doc-agents-parallel",
+    steps: [
+      {q: "Simulate two tools running at the same time, both 1500 ms: one labelled "
+          + "'remote index' and one labelled 'ranking'. Call both in the same step."}
+    ],
+    check: r => {
+      const calls = (r[0]?.trace?.tool_calls || []).filter(c => c.name === "simulate_tool");
+      if (calls.length < 2)
+        return {ok: false, line: `The model called <b>${calls.length}</b> simulated tool(s), not 2. `
+          + `Nothing to compare — try running it again.`};
+      const sum = calls.reduce((a, c) => a + c.duration_ms, 0);
+      const wall = Math.max(...calls.map(c => c.end_ms)) - Math.min(...calls.map(c => c.start_ms));
+      return {
+        ok: wall < sum * 0.75,
+        line: `Sum of the tools: <b>${nf(sum)} ms</b>. Wall time of the step: `
+          + `<b>${nf(wall)} ms</b>. The step cost the slowest one, and `
+          + `<b>${nf(sum - wall)} ms</b> never happened.`
+      };
+    }
+  },
+  {
+    id: "hop",
+    name: "The hop",
+    claim: "The tool is never the cost — the hop that decided to call it is.",
+    how: "Asks something the model cannot answer without a tool, then reads the waterfall.",
+    expect: "Tool time under a few ms; the model hops holding 90%+ of the wait.",
+    doc: "doc-agents-hop-cost",
+    steps: [
+      {q: "My TTFT is 1800 ms with 2 hops, 60 tokens/s and a 250 token answer. "
+          + "What does dropping one hop save?"}
+    ],
+    check: r => {
+      const t = r[0]?.trace || {};
+      const tools = t.tool_calls || [];
+      if (!tools.length)
+        return {ok: false, line: `The model answered without calling a tool, so there is no `
+          + `hop to compare against. Check that the agent loop is on.`};
+      const slowest = Math.max(...tools.map(c => c.duration_ms));
+      const ft = r[0]?.ttft || 1;
+      return {
+        ok: slowest < ft * 0.05,
+        line: `Slowest tool: <b>${ms(slowest)} ms</b>. Wait before the first word: `
+          + `<b>${nf(ft)} ms</b>. The tool was <b>${(slowest / ft * 100).toFixed(3)}%</b> of it.`
+      };
+    }
+  },
+  {
+    id: "topology",
+    name: "The topology",
+    claim: "The agent loop costs a whole extra hop against a fixed pipeline.",
+    how: "Runs the same question twice: agent loop on, then off. Your saved setting is not touched.",
+    expect: "The fixed pipeline reaches the first token several hundred ms sooner.",
+    doc: "doc-agents-what",
+    steps: [
+      {q: "How does token streaming work over server sent events?",
+       override: {agentic: true,  cache_l1: false}, label: "agent loop"},
+      {q: "How does token streaming work over server sent events?",
+       override: {agentic: false, cache_l1: false}, label: "fixed pipeline"}
+    ],
+    check: r => {
+      const [ag, fx] = r;
+      const d = (ag?.ttft ?? 0) - (fx?.ttft ?? 0);
+      return {
+        ok: d > 0,
+        line: `Agent loop <b>${nf(ag?.ttft)} ms</b> (${ag?.trace?.llm_hops || "?"} hops) against `
+          + `fixed pipeline <b>${nf(fx?.ttft)} ms</b> (1 hop) — `
+          + `<b>${d > 0 ? "−" : "+"}${nf(Math.abs(d))} ms</b> for giving the model the choice. `
+          + (d > 0 ? `That is the price of the decision, not of the work.`
+                   : `The loop came out ahead this time — one sample, and the tail is wide.`)
+      };
+    }
+  },
+  {
+    id: "streaming",
+    name: "The lie",
+    claim: "A deployment can generate the whole answer and only then dispatch it.",
+    how: "Asks for a long answer and measures the share of the answering hop spent delivering text.",
+    expect: "A healthy deployment spends 30%+ of the hop streaming. Under 25% is a block.",
+    doc: "doc-streaming-buffering",
+    steps: [
+      {q: "Explain in detail how retrieval augmented generation works, "
+          + "step by step, from the question to the answer.", override: {cache_l1: false}}
+    ],
+    check: r => {
+      const t = r[0]?.trace || {};
+      const hop = t.answer_hop_ms, st = t.stream_ms;
+      if (!hop || st == null)
+        return {ok: false, line: `Not enough of a stream to judge — the answer was too short.`};
+      const share = st / hop * 100;
+      return {
+        ok: !t.stream_buffered,
+        line: `<b>${nf(t.output_tokens)}</b> tokens delivered over <b>${nf(st)} ms</b> of a `
+          + `<b>${nf(hop)} ms</b> hop — <b>${share.toFixed(0)}%</b>. `
+          + (t.stream_buffered
+              ? `This deployment answered in one block: streaming bought you nothing.`
+              : `Incremental: the reader started reading before generation finished.`)
+      };
+    }
+  }
+];
+
+let labRunning = false;
+async function runExperiment(exp, btn){
+  if (labRunning) return;
+  labRunning = true;
+  const label = btn.textContent;
+  const head = el("div","verdict running");
+  try {
+    openDrawer(false); closeLab();
+    head.innerHTML = `<h4>${esc(exp.name)}</h4><p class="claim">${esc(exp.claim)}</p>`
+      + `<p class="status">running ${exp.steps.length} turn${exp.steps.length>1?"s":""}…</p>`;
+    if ($("log").querySelector(".hello")) $("log").innerHTML = "";
+    $("log").appendChild(head);
+    follow(head);
+
+    const results = [];
+    for (const st of exp.steps){
+      btn.textContent = `running ${results.length + 1}/${exp.steps.length}`;
+      results.push(await send({text: st.q, override: st.override || {}}));
+    }
+    const v = exp.check(results);
+    head.classList.remove("running");
+    head.classList.add(v.ok ? "held" : "failed");
+    head.querySelector(".status").innerHTML =
+      `<b>${v.ok ? "the claim held" : "the claim did not hold in this run"}</b> — ${v.line}`
+      + why(exp.doc);
+  } catch(e){
+    head.classList.remove("running");
+    head.classList.add("failed");
+    const st = head.querySelector(".status");
+    if (st) st.textContent = "the experiment failed to run: " + e.message;
+  } finally {
+    /* In a finally, so a thrown experiment cannot leave the Lab permanently
+       locked - the failure mode that hid this very bug for one test run. */
+    btn.textContent = label;
+    $("send").disabled = false;
+    labRunning = false;
+  }
+}
+
+function renderLab(){
+  const body = $("labBody");
+  body.innerHTML = "";
+  body.appendChild(el("p","lab-intro",
+    "Each one states a claim, runs the turns that test it, and reports whether the "
+    + "numbers agreed. Overrides are per request — your configuration is not touched."));
+  LAB.forEach(exp => {
+    const c = el("div","exp");
+    c.innerHTML =
+      `<h4>${esc(exp.name)}</h4>`
+      + `<p class="claim">${esc(exp.claim)}</p>`
+      + `<p class="how">${esc(exp.how)}</p>`
+      + `<p class="expect"><i>expect</i> ${esc(exp.expect)}</p>`;
+    const b = el("button","btn","run it");
+    b.onclick = () => runExperiment(exp, b);
+    c.appendChild(b);
+    body.appendChild(c);
+  });
+}
+const openLab = () => {
+  renderLab();
+  $("labPanel").classList.add("open"); $("scrim").classList.add("open");
+};
+const closeLab = () => {
+  $("labPanel").classList.remove("open");
+  if (!$("drawer").classList.contains("open") && !$("docPanel").classList.contains("open"))
+    $("scrim").classList.remove("open");
+};
+
+/* =============================================================
+   Concepts: the measurement links to the document that explains it
+   Every lesson the card states has a doc in the indexed corpus. Without the
+   link the reader has to already know the vocabulary to go looking; with it,
+   the concept arrives at the moment they are curious about the number.
+   ============================================================= */
+const DOC_CACHE = {};
+async function openDoc(id){
+  const panel = $("docPanel"), body = $("docBody");
+  $("docTitle").textContent = "Loading…";
+  body.innerHTML = "";
+  panel.classList.add("open"); $("scrim").classList.add("open");
+  try {
+    const d = DOC_CACHE[id] || (DOC_CACHE[id] = await (await fetch(`${API()}/v1/corpus/doc/${id}`)).json());
+    $("docTitle").textContent = d.title || id;
+    body.innerHTML =
+      `<div class="meta">${esc(d.id)} · topic <b>${esc(d.topic||"—")}</b> · ${esc(d.locale||"")}<br>`
+      + `indexed — this is a passage <b>kb_search</b> can retrieve</div>`
+      + String(d.text || "").split(/\n{2,}/).map(x => `<p>${esc(x)}</p>`).join("");
+  } catch(e){
+    $("docTitle").textContent = "Not found";
+    body.innerHTML = `<p>No document <code>${esc(id)}</code> in the corpus.</p>`;
+  }
+}
+const closeDoc = () => {
+  $("docPanel").classList.remove("open");
+  if (!$("drawer").classList.contains("open")) $("scrim").classList.remove("open");
+};
+$("docClose").onclick = closeDoc;
+
+/* A `why?` button, as HTML so it can be dropped inside any note string. */
+const why = id => ` <button class="why" data-doc="${esc(id)}">why?</button>`;
+document.addEventListener("click", e => {
+  const b = e.target.closest(".why");
+  if (b) openDoc(b.dataset.doc);
+});
+
 const openDrawer = on => {
   $("drawer").classList.toggle("open", on);
   $("scrim").classList.toggle("open", on);
   if (on) $("drawer").querySelector("input,button").focus();
 };
+$("labBtn").onclick = openLab;
+$("labClose").onclick = closeLab;
 $("cfgBtn").onclick = () => openDrawer(true);
 $("cfgClose").onclick = () => openDrawer(false);
-$("scrim").onclick = () => openDrawer(false);
-document.addEventListener("keydown", e => { if (e.key === "Escape") openDrawer(false); });
+$("scrim").onclick = () => { openDrawer(false); closeDoc(); closeLab(); };
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape"){ openDrawer(false); closeDoc(); closeLab(); }
+});
 
 $("clearCache").onclick = async e => {
   const b = e.currentTarget; const t = b.textContent;
@@ -708,6 +1047,14 @@ syncDrawer();
    Environment chips + corpus (so a reader knows what is grounded)
    ============================================================= */
 let CORPUS = null;
+let BUDGET = null;   /* {targets_ms, spans} from /v1/budget */
+
+/* The pinned baseline. Comparing two configurations used to mean remembering
+   four numbers from a card that had scrolled away, which is the difference
+   between "the toggle changed something" and "the toggle cost me 1.2 seconds".
+   Deltas apply to turns that come AFTER the pin - a card states what was true
+   when it was drawn and is not rewritten later. */
+let BASELINE = null;
 
 async function readEnv(){
   const box = $("env");
@@ -734,6 +1081,9 @@ async function readEnv(){
     box.innerHTML = `<span class="chip bad"><s></s>no backend at ${esc(API() || "this origin")} — start uvicorn, then reload</span>`;
   }
   try { CORPUS = await (await fetch(`${API()}/v1/corpus`)).json(); } catch(e){}
+  /* The budget is served, not hardcoded here: the bench compares against the
+     same declaration the waterfall draws. */
+  try { BUDGET = await (await fetch(`${API()}/v1/budget`)).json(); } catch(e){}
   if (!history.length) renderHello();
 }
 
@@ -800,19 +1150,31 @@ function pct(vals, p){
   const lo = Math.floor(k), hi = Math.min(lo + 1, v.length - 1);
   return v[lo] + (v[hi] - v[lo]) * (k - lo);
 }
+/* A percentile needs a sample. Below this many turns, p95 is the maximum
+   wearing a percentile's name - with n=1 it is literally p50 printed twice.
+   This repository ships a document called "Report percentiles, never averages";
+   its own header should not be the counter-example. */
+const P95_MIN_N = 20;
+
 function renderMeters(){
   const m = $("meters");
   if (!turns.length){ m.innerHTML = ""; return; }
   const ft = turns.map(t => t.ttft);
   const hits = turns.filter(t => t.hit).length;
   const cost = turns.reduce((a,t) => a + (t.cost || 0), 0);
-  const cell = (k, v, on) =>
-    `<div class="meter${on ? " on" : ""}"><i>${k}</i><b>${v}</b></div>`;
+  const n = turns.length;
+  const cell = (k, v, on, tip) =>
+    `<div class="meter${on ? " on" : ""}"${tip ? ` title="${esc(tip)}"` : ""}>`
+    + `<i>${k}</i><b>${v}</b></div>`;
   m.innerHTML =
-    cell("turns", turns.length) +
-    cell("1st token p50", `${nf(pct(ft,.5))}<small> ms</small>`, true) +
-    cell("p95", `${nf(pct(ft,.95))}<small> ms</small>`) +
-    cell("cache hits", `${hits}/${turns.length}`) +
+    cell("turns", n) +
+    cell(`1st token ${n >= 3 ? "p50" : "median"}`, `${nf(pct(ft,.5))}<small> ms</small>`, true) +
+    (n >= P95_MIN_N
+      ? cell("p95", `${nf(pct(ft,.95))}<small> ms</small>`)
+      : cell("p95", `<small>needs ${P95_MIN_N - n} more</small>`, false,
+             `A p95 from ${n} sample${n===1?"":"s"} is the maximum with a percentile's name. `
+             + `Run the bench for a real tail: uv run python -m bench.load`)) +
+    cell("cache hits", `${hits}/${n}`) +
     cell("spend", `${cost.toFixed(4)}<small> usd</small>`);
 }
 
@@ -864,12 +1226,17 @@ function follow(node){
 /* =============================================================
    The measured request
    ============================================================= */
-async function send(){
-  const text = ta.value.trim();
-  if (!text || $("send").disabled) return;
+/* `send` takes options so the Lab can drive it: a question that did not come
+   from the textarea, and per-request overrides that do NOT touch the user's
+   saved configuration. An experiment that silently rewrote your settings would
+   be a bad experiment - it has to be able to run "intent off" without leaving
+   intent off. It returns the turn's result so a verdict can be computed. */
+async function send(opts = {}){
+  const text = (opts.text ?? ta.value).trim();
+  if (!text || (!opts.text && $("send").disabled)) return null;
 
   if ($("log").querySelector(".hello")) $("log").innerHTML = "";
-  ta.value = ""; sizeTextarea();
+  if (!opts.text){ ta.value = ""; sizeTextarea(); }
   $("send").disabled = true;
 
   const turn = el("div","turn");
@@ -917,7 +1284,8 @@ async function send(){
     cache_l1: CFG.l1,
     cache_canonical: CFG.canon,
     cache_l2: CFG.l2,
-    force_tier: CFG.tier || null
+    force_tier: CFG.tier || null,
+    ...(opts.override || {})
   };
 
   try {
@@ -992,11 +1360,12 @@ async function send(){
   }
 
   $("send").disabled = false;
-  ta.focus();
+  if (!opts.text) ta.focus();
   /* No scroll at the end of the turn, on purpose. `follow` has already kept
      the last line of the answer on screen; jumping anywhere now - the bottom
      of the page, the top of the card - would move text the reader is looking
      at. The card is right below, and scrolling to it is their call. */
+  return {trace, ttft, doneMs, chunks, err, turn, text: body.textContent};
 }
 
 /* =============================================================
@@ -1028,6 +1397,14 @@ const SPAN = {
 };
 const spanInfo = n => SPAN[n] || [n, "#7E8C99"];
 const isTool = n => n.startsWith("tool:");
+
+/* The budgeted milliseconds for a span, or null. Served by /v1/budget so the
+   number here and the number the bench compares against cannot drift apart. */
+function budgetFor(name){
+  if (!BUDGET) return null;
+  const key = (BUDGET.spans || {})[name];
+  return key ? (BUDGET.targets_ms || {})[key] ?? null : null;
+}
 
 function timeline(trace, ttft, doneMs){
   const spans = (trace.spans || []).filter(s => s.duration_ms != null);
@@ -1118,8 +1495,26 @@ function timeline(trace, ttft, doneMs){
     bar.style.animationDelay = (k * 40) + "ms";
     bar.title = `${nf(sp.start_ms)} → ${nf(sp.end_ms)} ms`;
     track.appendChild(bar);
+
+    /* The promise, drawn on the bar it judges. A span with no budgeted line
+       gets no tick - and that is information too: it means nobody ever put a
+       number on it, not that it was free. */
+    const target = budgetFor(sp.name);
+    if (target != null){
+      const tick = el("u");
+      tick.style.left = scale(sp.start_ms + target) + "%";
+      tick.title = `budget: ${nf(target)} ms`;
+      track.appendChild(tick);
+    }
     row.appendChild(track);
-    row.appendChild(el("div","d", `${ms(sp.duration_ms)} ms`));
+    const d = el("div","d", `${ms(sp.duration_ms)} ms`);
+    if (target != null){
+      const over = sp.duration_ms > target;
+      d.appendChild(el("em", over ? "over" : "under",
+        `${over ? "+" : "−"}${nf(Math.abs(sp.duration_ms - target))}`));
+      d.title = `budget ${nf(target)} ms · measured ${nf(sp.duration_ms)} ms`;
+    }
+    row.appendChild(d);
     wf.appendChild(row);
   });
   const axis = el("div","axis");
@@ -1149,7 +1544,7 @@ function timeline(trace, ttft, doneMs){
       `A tool ran a model of its own: <b>${nf(tin)}</b> input and <b>${nf(tout)}</b> output `
       + `tokens, <b>${nf(inf)} ms</b> of inference, <b>${tc.toFixed(6)} ${esc(trace.currency||"USD")}</b> `
       + `— cost that is NOT in the total above, because it never passes through the `
-      + `provider usage of this turn.`));
+      + `provider usage of this turn.` + why("doc-cost-tokens")));
   }
 
   /* ---- the reading the chart hands you ---- */
@@ -1167,7 +1562,8 @@ function timeline(trace, ttft, doneMs){
       + (tools.length > 1 ? `(the slowest of ${tools.length})` : `(the only one)`)
       + `; the ${hops.length} model hop${hops.length>1?"s":""} cost <b>${nf(hopSum)} ms</b> — `
       + `<b>${share.toFixed(0)}%</b> of the wait before the first word. The cost of a tool is `
-      + `rarely the tool: it is the hop that decided to call it.`));
+      + `rarely the tool: it is the hop that decided to call it.`
+      + why("doc-agents-hop-cost")));
   }
   return box;
 }
@@ -1284,20 +1680,42 @@ function card({trace, ttft, doneMs, chunks, err}){
   if (t.llm_hops) tags.push(`<span class="tag${t.llm_hops > 1 ? " warm" : ""}">${t.llm_hops} hop${t.llm_hops>1?"s":""}</span>`);
   if (t.tier) tags.push(`<span class="tag">tier ${esc(t.tier)}</span>`);
   if (t.usage_source) tags.push(`<span class="tag">tokens: ${esc(t.usage_source)}</span>`);
-  box.appendChild(el("div","card-hd",
-    `<h3>turn measurement</h3><div class="tags">${tags.join("")}</div>`));
+  const hd = el("div","card-hd",
+    `<h3>turn measurement</h3><div class="tags">${tags.join("")}</div>`);
+  const pin = el("button","pin", BASELINE && BASELINE.id === t.request_id
+    ? "baseline ✓" : "pin as baseline");
+  pin.title = "Later turns will show their difference against this one.";
+  pin.onclick = () => {
+    BASELINE = {id: t.request_id, ttft, doneMs, cost: cost || 0, trace: t};
+    document.querySelectorAll(".pin").forEach(b => b.textContent = "pin as baseline");
+    pin.textContent = "baseline ✓";
+  };
+  hd.appendChild(pin);
+  box.appendChild(hd);
+
+  /* Δ against the pinned baseline, on the three numbers that decide things. */
+  const base = BASELINE && BASELINE.id !== t.request_id ? BASELINE : null;
+  const delta = (now, was, unit) => {
+    if (!base || now == null || was == null) return "";
+    const d = now - was;
+    if (Math.abs(d) < (unit === "usd" ? 0.0000005 : 0.5)) return `<u class="same">same</u>`;
+    const txt = unit === "usd" ? Math.abs(d).toFixed(6) : nf(Math.abs(d));
+    return `<u class="${d < 0 ? "down" : "up"}">${d < 0 ? "▼" : "▲"} ${txt}</u>`;
+  };
 
   const ro = el("div","readouts");
   const cell = (k, v, cls) => ro.appendChild(el("div","ro" + (cls ? " " + cls : ""),
     `<i>${k}</i><b>${v}</b>`));
-  cell("first token", ttft == null ? "—" : `${nf(ttft)}<small> ms</small>`, hit ? "hit" : "hero");
-  cell("total", `${nf(doneMs)}<small> ms</small>`);
+  cell("first token", (ttft == null ? "—" : `${nf(ttft)}<small> ms</small>`)
+       + delta(ttft, base?.ttft), hit ? "hit" : "hero");
+  cell("total", `${nf(doneMs)}<small> ms</small>` + delta(doneMs, base?.doneMs));
   cell("tokens/s", t.tokens_per_s == null ? "—" : nf(t.tokens_per_s, 1), buffered ? "warn" : "");
   cell("output", out == null ? "—" : nf(out));
   cell("input", t.input_tokens == null ? "—"
       : `${nf(t.input_tokens)}${t.cached_input_tokens ? `<small> +${nf(t.cached_input_tokens)} cached</small>` : ""}`);
-  cell("cost", cost == null ? "—"
-      : (cost === 0 ? `0<small> — cache</small>` : `${cost.toFixed(6)}<small> ${esc(cur)}</small>`),
+  cell("cost", (cost == null ? "—"
+      : (cost === 0 ? `0<small> — cache</small>` : `${cost.toFixed(6)}<small> ${esc(cur)}</small>`))
+      + delta(cost, base?.cost, "usd"),
       cost === 0 ? "hit" : "");
   box.appendChild(ro);
 
@@ -1315,6 +1733,46 @@ function card({trace, ttft, doneMs, chunks, err}){
 
   const tl = timeline(t, ttft, doneMs);
   if (tl) box.appendChild(tl);
+
+  /* A cache hit deserves its own sentence: it is the cheapest latency win in
+     the whole system, and until now the interface reported it as a small
+     number in a grid rather than as the lesson it is. */
+  if (hit){
+    const l2 = t.cache_tier === "l2";
+    box.appendChild(el("div","sect",
+      `<div class="note">Answered from the <b>${l2 ? "semantic" : "exact"} cache</b> in `
+      + `<b>${nf(ttft ?? doneMs)} ms</b>, with <b>zero tokens</b> and zero cost — the model `
+      + `was never called. `
+      + (l2
+          ? `This one matched by embedding similarity (<b>${(t.cache_similarity ?? 0).toFixed(4)}</b>), `
+            + `which is the tier that buys hit rate with correctness: "enable" and "disable" `
+            + `score 0.79 apart in this corpus.`
+          : `Normalised question in, stored answer out. It only fires on an exact repeat, `
+            + `which is why its hit rate is low and its risk is nil.`)
+      + why(l2 ? "doc-cache-semantic" : "doc-cache-exact") + `</div>`));
+  }
+
+  /* The headline number, judged. A waterfall says where the time went; this
+     says whether that was the deal. Cache hits are judged against the cache
+     line of the budget, not the miss line - holding a 10 ms hit to a 1,600 ms
+     target would flatter it by two orders of magnitude. */
+  const tg = BUDGET && BUDGET.targets_ms;
+  if (tg && ttft != null){
+    const target = hit ? tg.cache_hit : tg.first_token;
+    const over = ttft > target;
+    const delta = Math.abs(ttft - target);
+    box.appendChild(el("div","sect",
+      `<div class="note">First token <b>${nf(ttft)} ms</b> against a `
+      + `<b>${nf(target)} ms</b> budget${hit ? " for a cache hit" : ""} — `
+      + `<b class="${over ? "" : ""}">${over ? "over" : "under"} by ${nf(delta)} ms</b> `
+      + `(${(ttft/target*100).toFixed(0)}% of the target). `
+      + (over
+          ? `A number is only late against a promise; this is the promise, and it is `
+            + `declared in <b>app/budget.py</b>, not inferred from this run.`
+          : `The budget is a target, not a record — beating it comfortably means it is `
+            + `worth tightening.`)
+      + why("doc-latency-budget") + `</div>`));
+  }
 
   /* If the whole stream landed inside a tiny window of the hop that produced
      it, the endpoint buffered: the user waited for the entire text, and
@@ -1356,7 +1814,32 @@ function card({trace, ttft, doneMs, chunks, err}){
       + `If the answer says it could not look something up, the ceiling is the `
       + `constraint that stopped it — reaching the internet alone costs two hops `
       + `(<b>web_search</b> returns titles and URLs only, so <b>web_fetch</b> must `
-      + `follow) plus one to answer. Raise <b>MAX_TOOL_HOPS</b>.</div>`));
+      + `follow) plus one to answer. Raise <b>MAX_TOOL_HOPS</b>.`
+      + why("doc-agents-hop-cost") + `</div>`));
+  }
+
+  /* Where the difference actually came from. Two turns with the same total can
+     have nothing else in common, and the per-span line is what turns "it got
+     faster" into "it got faster because the intent hop is gone". */
+  if (base){
+    const now = {}, was = {};
+    (t.spans || []).forEach(sp => now[sp.name] = (now[sp.name] || 0) + sp.duration_ms);
+    (base.trace.spans || []).forEach(sp => was[sp.name] = (was[sp.name] || 0) + sp.duration_ms);
+    const rows = [...new Set([...Object.keys(now), ...Object.keys(was)])]
+      .map(k => ({k, d: (now[k] || 0) - (was[k] || 0), now: now[k], was: was[k]}))
+      .filter(r => Math.abs(r.d) > 20)
+      .sort((a, b) => Math.abs(b.d) - Math.abs(a.d))
+      .slice(0, 5);
+    if (rows.length){
+      box.appendChild(el("div","sect",
+        `<div class="note">Against the pinned baseline, span by span: `
+        + rows.map(r => `<b>${esc(spanInfo(r.k)[0])}</b> `
+            + (r.was == null ? `appeared (+${nf(r.d)} ms)`
+              : r.now == null ? `disappeared (−${nf(-r.d)} ms)`
+              : `${r.d < 0 ? "−" : "+"}${nf(Math.abs(r.d))} ms`)).join(", ")
+        + `. A total that moved without a span moving is noise; a span that `
+        + `disappeared is a decision.</div>`));
+    }
   }
 
   const xc = exchange(t);

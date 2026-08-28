@@ -12,7 +12,6 @@ dependencies = [
     "openai>=1.59",
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
-    "redis>=5.2",
     "httpx>=0.28",
     "numpy>=2.2",
     "rich>=13.9",
@@ -26,6 +25,12 @@ dependencies = [
 # package - the import is lazy and the tool returns a clear error if it is absent.
 #   uv sync --extra browse
 browse = ["stagehand>=4.0"]
+
+# A shared cache across replicas. The import in app/cache.py is already lazy and
+# the engine falls back to the in-process dict (flagged in the trace) when the
+# package or REDIS_URL is absent, so it does not belong in everyone's install.
+#   uv sync --extra redis
+redis = ["redis>=5.2"]
 
 # test dependencies:  uv sync --extra dev
 dev = ["pytest>=8.0", "ruff>=0.6"]
